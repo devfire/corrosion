@@ -1,6 +1,8 @@
 mod cli;
+mod fault_injection;
 
 use anyhow::{Context, Result};
+use fault_injection::{FaultInjector, LatencyConfig};
 use tokio::io::{self};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
@@ -18,6 +20,26 @@ async fn main() -> Result<()> {
     let args = cli::Args::parse_args();
     let bind_addr = args.bind_address();
     let dest_addr = args.dest_address();
+
+    // Create latency configuration from CLI args
+    let latency_config = LatencyConfig::new(
+        args.latency_enabled,
+        args.latency_fixed_ms,
+        args.latency_random_ms,
+        args.latency_probability,
+    );
+
+    // Log fault injection configuration
+    if !latency_config.is_disabled() {
+        info!("Latency injection enabled:");
+        info!("  Fixed delay: {}ms", latency_config.fixed_ms);
+        if let Some((min, max)) = latency_config.random_range {
+            info!("  Random delay range: {}-{}ms", min, max);
+        }
+        info!("  Probability: {:.2}", latency_config.probability);
+    } else {
+        info!("Latency injection disabled");
+    }
 
     // Bind the listener to the address
     let listener = TcpListener::bind(&bind_addr)
@@ -39,10 +61,11 @@ async fn main() -> Result<()> {
         info!("New connection from: {} -> {}", client_addr, dest_addr);
 
         let dest_addr_clone = dest_addr.clone();
+        let latency_config_clone = latency_config.clone();
 
         // Spawn a new task to handle each connection
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone).await {
+            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone, latency_config_clone).await {
                 error!("Error handling connection from {}: {:?}", client_addr, e);
             }
         });
@@ -53,8 +76,16 @@ async fn handle_connection(
     mut inbound: TcpStream,
     client_addr: std::net::SocketAddr,
     dest_addr: String,
+    latency_config: LatencyConfig,
 ) -> Result<()> {
     debug!("Attempting to connect to destination: {}", dest_addr);
+
+    // Create fault injector for this connection
+    let mut fault_injector = FaultInjector::new(latency_config);
+    let connection_id = format!("{}->{}", client_addr, dest_addr);
+
+    // Apply latency before connecting to destination
+    fault_injector.apply_latency(&connection_id).await;
 
     // Connect to the destination server
     let mut outbound = match TcpStream::connect(&dest_addr).await {

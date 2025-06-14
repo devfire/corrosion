@@ -19,6 +19,40 @@ pub struct Args {
     /// Destination port
     #[arg(long, env = "DEST_PORT")]
     pub dest_port: u16,
+
+    /// Enable latency injection
+    #[arg(long, default_value = "false")]
+    pub latency_enabled: bool,
+
+    /// Fixed latency to add in milliseconds
+    #[arg(long, default_value = "0")]
+    pub latency_fixed_ms: u64,
+
+    /// Random latency range (min-max) in milliseconds
+    #[arg(long, value_parser = parse_latency_range)]
+    pub latency_random_ms: Option<(u64, u64)>,
+
+    /// Probability of applying latency (0.0-1.0)
+    #[arg(long, default_value = "1.0")]
+    pub latency_probability: f64,
+}
+
+fn parse_latency_range(s: &str) -> Result<(u64, u64), String> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 2 {
+        return Err("Latency range must be in format 'min-max' (e.g., '100-500')".to_string());
+    }
+    
+    let min = parts[0].parse::<u64>()
+        .map_err(|_| "Invalid minimum latency value".to_string())?;
+    let max = parts[1].parse::<u64>()
+        .map_err(|_| "Invalid maximum latency value".to_string())?;
+    
+    if min > max {
+        return Err("Minimum latency must be less than or equal to maximum latency".to_string());
+    }
+    
+    Ok((min, max))
 }
 
 impl Args {
