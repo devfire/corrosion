@@ -1,71 +1,67 @@
 mod cli;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = cli::Args::parse_args();
     let bind_addr = args.bind_address();
+    let dest_addr = args.dest_address();
 
     // Bind the listener to the address
     let listener = TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("Failed to bind TCP listener to {}", bind_addr))?;
     
-    println!("TCP server listening on {}", bind_addr);
+    println!("TCP proxy listening on {} -> forwarding to {}", bind_addr, dest_addr);
 
     loop {
         // Accept new connections
-        let (socket, addr) = listener
+        let (inbound, client_addr) = listener
             .accept()
             .await
             .context("Failed to accept incoming connection")?;
         
-        println!("New connection from: {}", addr);
+        println!("New connection from: {} -> {}", client_addr, dest_addr);
 
+        let dest_addr_clone = dest_addr.clone();
+        
         // Spawn a new task to handle each connection
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(socket, addr).await {
-                eprintln!("Error handling connection from {}: {:?}", addr, e);
+            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone).await {
+                eprintln!("Error handling connection from {}: {:?}", client_addr, e);
             }
         });
     }
 }
 
-async fn handle_connection(mut socket: TcpStream, addr: std::net::SocketAddr) -> Result<()> {
-    let mut buffer = [0; 1024];
+async fn handle_connection(
+    mut inbound: TcpStream,
+    client_addr: std::net::SocketAddr,
+    dest_addr: String
+) -> Result<()> {
+    // Connect to the destination server
+    let mut outbound = TcpStream::connect(&dest_addr)
+        .await
+        .with_context(|| format!("Failed to connect to destination {}", dest_addr))?;
 
-    loop {
-        // Read data from the socket
-        let bytes_read = socket
-            .read(&mut buffer)
-            .await
-            .with_context(|| format!("Failed to read data from client {}", addr))?;
-        
-        // If no bytes were read, the connection is closed
-        if bytes_read == 0 {
-            println!("Connection closed by client {}", addr);
-            break;
+    println!("Established proxy connection: {} <-> {}", client_addr, dest_addr);
+
+    // Use bidirectional copy to handle the proxy
+    match io::copy_bidirectional(&mut inbound, &mut outbound).await {
+        Ok((client_to_server, server_to_client)) => {
+            println!(
+                "Proxy connection completed: {} bytes client->server, {} bytes server->client",
+                client_to_server, server_to_client
+            );
         }
-
-        // Convert bytes to string for display
-        let received = String::from_utf8_lossy(&buffer[..bytes_read]);
-        println!("Received from {}: {}", addr, received.trim());
-
-        // Echo the data back to the client
-        socket
-            .write_all(&buffer[..bytes_read])
-            .await
-            .with_context(|| format!("Failed to write data to client {}", addr))?;
-        
-        socket
-            .flush()
-            .await
-            .with_context(|| format!("Failed to flush data to client {}", addr))?;
+        Err(e) => {
+            eprintln!("Proxy error for {}: {}", client_addr, e);
+        }
     }
 
-    println!("Connection with {} closed successfully", addr);
+    println!("Proxy connection closed: {} <-> {}", client_addr, dest_addr);
     Ok(())
 }
