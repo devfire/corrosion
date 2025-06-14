@@ -8,6 +8,7 @@ A transparent TCP proxy implementation using Tokio for fault injection testing a
 - **Concurrent connection handling**
 - **Transparent bidirectional data forwarding**
 - **Latency fault injection** with configurable parameters
+- **Packet loss simulation** with burst mode support
 - **Probability-based fault injection**
 - **Fixed and random latency injection**
 - **Proper error handling**
@@ -60,6 +61,12 @@ cargo run -- --help
 - `--latency-fixed-ms`: Fixed latency to add in milliseconds (default: `0`)
 - `--latency-random-ms`: Random latency range in format `min-max` (e.g., `100-500`)
 - `--latency-probability`: Probability of applying latency, 0.0-1.0 (default: `1.0`)
+
+**Packet Loss Simulation:**
+- `--packet-loss-enabled`: Enable packet loss simulation (default: `false`)
+- `--packet-loss-probability`: Probability of dropping packets, 0.0-1.0 (default: `0.0`)
+- `--packet-loss-burst-size`: Number of consecutive packets to drop in burst mode
+- `--packet-loss-burst-probability`: Probability of entering burst mode, 0.0-1.0 (default: `0.0`)
 
 Command-line arguments take precedence over environment variables.
 
@@ -123,6 +130,45 @@ python3 test_latency.py
 ```
 
 Expected output should show response times in the 600-800ms range (500ms fixed + 100-300ms random + network overhead).
+
+### Packet Loss Simulation
+
+The proxy supports packet loss simulation to test application resilience to network packet drops.
+
+#### Basic Packet Loss
+
+Drop 10% of packets randomly:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.1
+```
+
+#### Burst Packet Loss
+
+Drop packets in bursts of 3 consecutive packets, with 5% chance of entering burst mode:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.05 --packet-loss-burst-size 3 --packet-loss-burst-probability 0.05
+```
+
+#### Combined Latency and Packet Loss
+
+Add 200ms latency and 15% packet loss:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --latency-enabled --latency-fixed-ms 200 --packet-loss-enabled --packet-loss-probability 0.15
+```
+
+#### Testing Packet Loss Simulation
+
+Use the included test script to verify packet loss simulation:
+```bash
+# Start the proxy with packet loss simulation
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.2
+
+# In another terminal, run the test
+python3 test_packet_loss.py
+```
+
+Expected output should show approximately 20% of requests failing due to packet loss.
+
 #### Test with telnet:
 ```bash
 telnet 127.0.0.1 8080
@@ -138,13 +184,15 @@ nc 127.0.0.1 8080
 1. The proxy parses command-line arguments or environment variables for bind and destination configuration
 2. The proxy binds to the specified local address and listens for incoming connections
 3. For each new connection, a separate Tokio task is spawned to handle it concurrently
-4. **Fault injection is applied** (if enabled) before establishing the destination connection
+4. **Fault injection is applied** (if enabled) before and during connection handling
 5. Each connection handler establishes a connection to the destination server
-6. Data is transparently forwarded bidirectionally between client and destination
+6. Data is forwarded bidirectionally with fault injection applied to each data packet
 7. Connections are properly closed when either side disconnects
 8. Errors are handled gracefully and logged with connection details
 
 ### Fault Injection Process
+
+#### Latency Injection
 
 When latency injection is enabled:
 
@@ -157,6 +205,20 @@ When latency injection is enabled:
 5. **Destination connection**: After the delay, connection to the destination server is established
 6. **Normal proxying**: Data flows transparently between client and destination
 
+#### Packet Loss Simulation
+
+When packet loss simulation is enabled:
+
+1. **Data packet received**: For each chunk of data received from either direction
+2. **Packet loss check**: Random probability check determines if packet should be dropped
+3. **Burst mode handling**:
+   - If burst mode is configured, check for entering burst mode
+   - In burst mode, drop consecutive packets until burst size is reached
+4. **Packet forwarding**: If packet is not dropped, forward it to the destination
+5. **Logging**: All packet drops are logged with connection details
+
+The packet loss simulation operates at the application data level, simulating the effect of network packet loss on the data stream.
+
 ## Architecture
 
 The implementation follows Rust best practices:
@@ -164,7 +226,7 @@ The implementation follows Rust best practices:
 - **Async/await**: Uses Tokio's async runtime for non-blocking I/O
 - **Error handling**: Proper `Result` types and error propagation
 - **Concurrency**: Each proxy connection runs in its own task
-- **Bidirectional forwarding**: Uses `io::copy_bidirectional` for efficient data transfer
+- **Bidirectional forwarding**: Uses custom bidirectional copy with fault injection support
 - **Resource management**: Automatic cleanup of connections
 - **Type safety**: Leverages Rust's type system for memory safety
 - **Modular design**: CLI configuration separated into its own module
@@ -182,10 +244,10 @@ The implementation follows Rust best practices:
 
 The fault injection framework is designed to be extensible. Planned features include:
 
-- **Packet loss injection**: Drop packets at configurable rates
 - **Bandwidth throttling**: Limit connection throughput
 - **Connection drops**: Randomly terminate connections
 - **Jitter injection**: Add variable delays to simulate network instability
 - **Protocol-specific faults**: HTTP error injection, DNS failures, etc.
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
+- **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model
