@@ -89,8 +89,8 @@ impl FaultInjector {
 
         let delay_ms = self.calculate_delay();
         if delay_ms > 0 {
-            info!(
-                "Injecting {}ms latency for connection {}",
+            debug!(
+                "Injecting {}ms latency for packet on connection {}",
                 delay_ms, connection_id
             );
             sleep(Duration::from_millis(delay_ms)).await;
@@ -148,10 +148,6 @@ impl FaultInjector {
         false
     }
 
-    /// Get packet loss configuration for logging
-    pub fn packet_loss_config(&self) -> &PacketLossConfig {
-        &self.packet_loss_config
-    }
 }
 
 #[cfg(test)]
