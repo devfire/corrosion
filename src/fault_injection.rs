@@ -89,8 +89,8 @@ impl FaultInjector {
 
         let delay_ms = self.calculate_delay();
         if delay_ms > 0 {
-            info!(
-                "Injecting {}ms latency for connection {}",
+            debug!(
+                "Injecting {}ms latency for packet on connection {}",
                 delay_ms, connection_id
             );
             sleep(Duration::from_millis(delay_ms)).await;

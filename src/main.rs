@@ -105,9 +105,6 @@ async fn handle_connection(
     let mut fault_injector = FaultInjector::new(latency_config, packet_loss_config);
     let connection_id = format!("{}->{}", client_addr, dest_addr);
 
-    // Apply latency before connecting to destination
-    fault_injector.apply_latency(&connection_id).await;
-
     // Connect to the destination server
     let mut outbound = match TcpStream::connect(&dest_addr).await {
         Ok(stream) => {
@@ -193,6 +190,9 @@ async fn copy_bidirectional_with_faults(
                             continue;
                         }
                         
+                        // Apply latency per packet
+                        fault_injector.apply_latency(connection_id).await;
+                        
                         match b.write_all(&buf_a[..n]).await {
                             Ok(()) => {
                                 total_a_to_b += n as u64;
@@ -215,6 +215,9 @@ async fn copy_bidirectional_with_faults(
                             // Simulate packet loss by not forwarding the data
                             continue;
                         }
+                        
+                        // Apply latency per packet
+                        fault_injector.apply_latency(connection_id).await;
                         
                         match a.write_all(&buf_b[..n]).await {
                             Ok(()) => {
