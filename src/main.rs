@@ -2,8 +2,8 @@ mod cli;
 mod fault_injection;
 
 use anyhow::{Context, Result};
-use fault_injection::{FaultInjector, LatencyConfig};
-use tokio::io::{self};
+use fault_injection::{FaultInjector, LatencyConfig, PacketLossConfig};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
 
@@ -29,6 +29,14 @@ async fn main() -> Result<()> {
         args.latency_probability,
     );
 
+    // Create packet loss configuration from CLI args
+    let packet_loss_config = PacketLossConfig::new(
+        args.packet_loss_enabled,
+        args.packet_loss_probability,
+        args.packet_loss_burst_size,
+        args.packet_loss_burst_probability,
+    );
+
     // Log fault injection configuration
     if !latency_config.is_disabled() {
         info!("Latency injection enabled:");
@@ -39,6 +47,17 @@ async fn main() -> Result<()> {
         info!("  Probability: {:.2}", latency_config.probability);
     } else {
         info!("Latency injection disabled");
+    }
+
+    if !packet_loss_config.is_disabled() {
+        info!("Packet loss injection enabled:");
+        info!("  Drop probability: {:.3}", packet_loss_config.probability);
+        if let Some(burst_size) = packet_loss_config.burst_size {
+            info!("  Burst size: {} packets", burst_size);
+            info!("  Burst probability: {:.3}", packet_loss_config.burst_probability);
+        }
+    } else {
+        info!("Packet loss injection disabled");
     }
 
     // Bind the listener to the address
@@ -62,10 +81,11 @@ async fn main() -> Result<()> {
 
         let dest_addr_clone = dest_addr.clone();
         let latency_config_clone = latency_config.clone();
+        let packet_loss_config_clone = packet_loss_config.clone();
 
         // Spawn a new task to handle each connection
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone, latency_config_clone).await {
+            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone, latency_config_clone, packet_loss_config_clone).await {
                 error!("Error handling connection from {}: {:?}", client_addr, e);
             }
         });
@@ -77,11 +97,12 @@ async fn handle_connection(
     client_addr: std::net::SocketAddr,
     dest_addr: String,
     latency_config: LatencyConfig,
+    packet_loss_config: PacketLossConfig,
 ) -> Result<()> {
     debug!("Attempting to connect to destination: {}", dest_addr);
 
     // Create fault injector for this connection
-    let mut fault_injector = FaultInjector::new(latency_config);
+    let mut fault_injector = FaultInjector::new(latency_config, packet_loss_config);
     let connection_id = format!("{}->{}", client_addr, dest_addr);
 
     // Apply latency before connecting to destination
@@ -131,8 +152,8 @@ async fn handle_connection(
     //     Err(e) => warn!("Failed to peek at incoming data: {}", e),
     // }
 
-    // Use bidirectional copy to handle the proxy
-    match io::copy_bidirectional(&mut inbound, &mut outbound).await {
+    // Use custom bidirectional copy with packet loss simulation
+    match copy_bidirectional_with_faults(&mut inbound, &mut outbound, &mut fault_injector, &connection_id).await {
         Ok((client_to_server, server_to_client)) => {
             info!(
                 "Proxy connection completed: {} bytes client->server, {} bytes server->client",
@@ -146,4 +167,68 @@ async fn handle_connection(
 
     info!("Proxy connection closed: {} <-> {}", client_addr, dest_addr);
     Ok(())
+}
+
+async fn copy_bidirectional_with_faults(
+    a: &mut TcpStream,
+    b: &mut TcpStream,
+    fault_injector: &mut FaultInjector,
+    connection_id: &str,
+) -> Result<(u64, u64), std::io::Error> {
+    let mut buf_a = [0u8; 8192];
+    let mut buf_b = [0u8; 8192];
+    let mut total_a_to_b = 0u64;
+    let mut total_b_to_a = 0u64;
+
+    loop {
+        tokio::select! {
+            // Read from A, write to B
+            result_a = a.read(&mut buf_a) => {
+                match result_a {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        // Check if packet should be dropped
+                        if fault_injector.should_drop_packet(connection_id) {
+                            // Simulate packet loss by not forwarding the data
+                            continue;
+                        }
+                        
+                        match b.write_all(&buf_a[..n]).await {
+                            Ok(()) => {
+                                total_a_to_b += n as u64;
+                                b.flush().await?;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            
+            // Read from B, write to A
+            result_b = b.read(&mut buf_b) => {
+                match result_b {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        // Check if packet should be dropped
+                        if fault_injector.should_drop_packet(connection_id) {
+                            // Simulate packet loss by not forwarding the data
+                            continue;
+                        }
+                        
+                        match a.write_all(&buf_b[..n]).await {
+                            Ok(()) => {
+                                total_b_to_a += n as u64;
+                                a.flush().await?;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+
+    Ok((total_a_to_b, total_b_to_a))
 }

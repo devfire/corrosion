@@ -8,6 +8,7 @@ A transparent TCP proxy implementation using Tokio for fault injection testing a
 - **Concurrent connection handling**
 - **Transparent bidirectional data forwarding**
 - **Latency fault injection** with configurable parameters
+- **Packet loss simulation** with burst mode support
 - **Probability-based fault injection**
 - **Fixed and random latency injection**
 - **Proper error handling**
@@ -60,6 +61,12 @@ cargo run -- --help
 - `--latency-fixed-ms`: Fixed latency to add in milliseconds (default: `0`)
 - `--latency-random-ms`: Random latency range in format `min-max` (e.g., `100-500`)
 - `--latency-probability`: Probability of applying latency, 0.0-1.0 (default: `1.0`)
+
+**Packet Loss Simulation:**
+- `--packet-loss-enabled`: Enable packet loss simulation (default: `false`)
+- `--packet-loss-probability`: Probability of dropping packets, 0.0-1.0 (default: `0.0`)
+- `--packet-loss-burst-size`: Number of consecutive packets to drop in burst mode
+- `--packet-loss-burst-probability`: Probability of entering burst mode, 0.0-1.0 (default: `0.0`)
 
 Command-line arguments take precedence over environment variables.
 
@@ -123,6 +130,45 @@ python3 test_latency.py
 ```
 
 Expected output should show response times in the 600-800ms range (500ms fixed + 100-300ms random + network overhead).
+
+### Packet Loss Simulation
+
+The proxy supports packet loss simulation to test application resilience to network packet drops.
+
+#### Basic Packet Loss
+
+Drop 10% of packets randomly:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.1
+```
+
+#### Burst Packet Loss
+
+Drop packets in bursts of 3 consecutive packets, with 5% chance of entering burst mode:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.05 --packet-loss-burst-size 3 --packet-loss-burst-probability 0.05
+```
+
+#### Combined Latency and Packet Loss
+
+Add 200ms latency and 15% packet loss:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --latency-enabled --latency-fixed-ms 200 --packet-loss-enabled --packet-loss-probability 0.15
+```
+
+#### Testing Packet Loss Simulation
+
+Use the included test script to verify packet loss simulation:
+```bash
+# Start the proxy with packet loss simulation
+cargo run -- --dest-ip httpbin.org --dest-port 443 --packet-loss-enabled --packet-loss-probability 0.2
+
+# In another terminal, run the test
+python3 test_packet_loss.py
+```
+
+Expected output should show approximately 20% of requests failing due to packet loss.
+
 #### Test with telnet:
 ```bash
 telnet 127.0.0.1 8080
@@ -138,13 +184,15 @@ nc 127.0.0.1 8080
 1. The proxy parses command-line arguments or environment variables for bind and destination configuration
 2. The proxy binds to the specified local address and listens for incoming connections
 3. For each new connection, a separate Tokio task is spawned to handle it concurrently
-4. **Fault injection is applied** (if enabled) before establishing the destination connection
+4. **Fault injection is applied** (if enabled) before and during connection handling
 5. Each connection handler establishes a connection to the destination server
-6. Data is transparently forwarded bidirectionally between client and destination
+6. Data is forwarded bidirectionally with fault injection applied to each data packet
 7. Connections are properly closed when either side disconnects
 8. Errors are handled gracefully and logged with connection details
 
 ### Fault Injection Process
+
+#### Latency Injection
 
 When latency injection is enabled:
 
@@ -157,6 +205,129 @@ When latency injection is enabled:
 5. **Destination connection**: After the delay, connection to the destination server is established
 6. **Normal proxying**: Data flows transparently between client and destination
 
+#### Packet Loss Simulation
+
+When packet loss simulation is enabled:
+
+1. **Data packet received**: For each chunk of data received from either direction
+2. **Packet loss check**: Random probability check determines if packet should be dropped
+3. **Burst mode handling**:
+   - If burst mode is configured, check for entering burst mode
+   - In burst mode, drop consecutive packets until burst size is reached
+4. **Packet forwarding**: If packet is not dropped, forward it to the destination
+5. **Logging**: All packet drops are logged with connection details
+
+The packet loss simulation operates at the application data level, simulating the effect of network packet loss on the data stream.
+
+## How Latency Injection Works in Detail
+
+This section provides a comprehensive explanation of the latency injection implementation and mechanics.
+
+### Configuration Structure
+
+The latency injection is configured through the [`LatencyConfig`](src/fault_injection.rs:8) struct:
+
+```rust
+pub struct LatencyConfig {
+    pub enabled: bool,           // Whether latency injection is active
+    pub fixed_ms: u64,          // Fixed delay in milliseconds
+    pub random_range: Option<(u64, u64)>, // Optional random delay range
+    pub probability: f64,        // Probability of applying latency (0.0-1.0)
+}
+```
+
+### Latency Application Process
+
+The latency injection happens in the [`apply_latency()`](src/fault_injection.rs:73) method following this flow:
+
+1. **Check if enabled**: If latency injection is disabled, skip entirely
+2. **Probability check**: Generate random number (0.0-1.0) and compare to configured probability
+3. **Calculate delay**: Combine fixed delay + random delay (if configured)
+4. **Apply delay**: Use `tokio::time::sleep()` for non-blocking delay
+5. **Continue**: Proceed with normal connection handling
+
+### Delay Calculation
+
+The [`calculate_delay()`](src/fault_injection.rs:100) method combines two types of delays:
+
+- **Fixed Delay**: A constant delay specified in `fixed_ms`
+- **Random Delay**: An optional random component within a specified range
+
+```rust
+fn calculate_delay(&mut self) -> u64 {
+    let mut total_delay = self.latency_config.fixed_ms;
+    
+    if let Some((min, max)) = self.latency_config.random_range {
+        let random_delay = self.rng.gen_range(min..=max);
+        total_delay += random_delay;
+    }
+    
+    total_delay
+}
+```
+
+### When Latency is Applied
+
+The key insight is **when** the latency is applied. Looking at [`handle_connection()`](src/main.rs:95), the latency is injected at line 109:
+
+```rust
+// Apply latency before connecting to destination
+fault_injector.apply_latency(&connection_id).await;
+
+// Connect to the destination server
+let mut outbound = match TcpStream::connect(&dest_addr).await {
+    // ... connection logic
+}
+```
+
+**Important**: The latency is applied **only once per connection during connection establishment**, not per packet or data transfer. This simulates network delays that would occur during the initial connection setup phase, such as:
+
+- DNS resolution delays
+- Network routing delays
+- Connection establishment overhead
+- Initial handshake delays
+
+Once the connection is established and data begins flowing, there are no additional latency injections for individual packets or data chunks.
+
+### Probability-Based Injection
+
+Not every connection experiences latency. The system uses a probability check:
+
+1. Generate a random number between 0.0 and 1.0
+2. If the random number ≤ configured probability, apply latency
+3. Otherwise, skip latency injection for this connection
+
+This allows for realistic simulation where only some connections are affected by network delays.
+
+### Real-World Example
+
+From the test file, you can see an example configuration:
+- **Fixed delay**: 500ms
+- **Random range**: 100-300ms
+- **Total expected latency**: 600-800ms per connection
+
+The [`test_latency.py`](test_latency.py:1) script demonstrates this by:
+1. Making HTTP requests through the proxy
+2. Measuring response times
+3. Showing the added latency in action
+
+### Implementation Details
+
+- **Async/Await**: Uses [`tokio::time::sleep()`](src/fault_injection.rs:96) for non-blocking delays
+- **Per-Connection**: Each connection gets its own [`FaultInjector`](src/fault_injection.rs:53) instance
+- **Logging**: Comprehensive logging shows when latency is applied and skipped
+- **Thread-Safe**: Uses [`StdRng`](src/fault_injection.rs:56) for random number generation
+
+### Key Characteristics
+
+- **Connection-Level Only**: Latency is applied **once per connection during establishment**, not per packet or data transfer
+- **Initial Delay**: Simulates connection setup delays (DNS, routing, handshake) rather than ongoing transmission delays
+- **Transparent**: Once connected, data flows at normal speed - the client only experiences the initial connection delay
+- **Configurable**: All parameters (delay, randomness, probability) are adjustable
+- **Realistic for Connection Issues**: Simulates real network conditions where connection establishment is slow but data transfer is normal
+
+This design is particularly useful for testing how applications handle slow connection establishment, connection timeouts, and initial response delays, but does not simulate ongoing network latency during data transfer.
+
 ## Architecture
 
 The implementation follows Rust best practices:
@@ -164,7 +335,7 @@ The implementation follows Rust best practices:
 - **Async/await**: Uses Tokio's async runtime for non-blocking I/O
 - **Error handling**: Proper `Result` types and error propagation
 - **Concurrency**: Each proxy connection runs in its own task
-- **Bidirectional forwarding**: Uses `io::copy_bidirectional` for efficient data transfer
+- **Bidirectional forwarding**: Uses custom bidirectional copy with fault injection support
 - **Resource management**: Automatic cleanup of connections
 - **Type safety**: Leverages Rust's type system for memory safety
 - **Modular design**: CLI configuration separated into its own module
@@ -182,10 +353,10 @@ The implementation follows Rust best practices:
 
 The fault injection framework is designed to be extensible. Planned features include:
 
-- **Packet loss injection**: Drop packets at configurable rates
 - **Bandwidth throttling**: Limit connection throughput
 - **Connection drops**: Randomly terminate connections
 - **Jitter injection**: Add variable delays to simulate network instability
 - **Protocol-specific faults**: HTTP error injection, DNS failures, etc.
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
+- **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model

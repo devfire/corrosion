@@ -35,6 +35,22 @@ pub struct Args {
     /// Probability of applying latency (0.0-1.0)
     #[arg(long, default_value = "1.0")]
     pub latency_probability: f64,
+
+    /// Enable packet loss injection
+    #[arg(long, default_value = "false")]
+    pub packet_loss_enabled: bool,
+
+    /// Probability of packet loss (0.0-1.0)
+    #[arg(long, default_value = "0.0")]
+    pub packet_loss_probability: f64,
+
+    /// Burst packet loss size (number of consecutive packets to drop)
+    #[arg(long)]
+    pub packet_loss_burst_size: Option<u32>,
+
+    /// Probability of entering burst packet loss mode (0.0-1.0)
+    #[arg(long, default_value = "0.0")]
+    pub packet_loss_burst_probability: f64,
 }
 
 fn parse_latency_range(s: &str) -> Result<(u64, u64), String> {
