@@ -54,7 +54,10 @@ async fn main() -> Result<()> {
         info!("  Drop probability: {:.3}", packet_loss_config.probability);
         if let Some(burst_size) = packet_loss_config.burst_size {
             info!("  Burst size: {} packets", burst_size);
-            info!("  Burst probability: {:.3}", packet_loss_config.burst_probability);
+            info!(
+                "  Burst probability: {:.3}",
+                packet_loss_config.burst_probability
+            );
         }
     } else {
         info!("Packet loss injection disabled");
@@ -85,7 +88,15 @@ async fn main() -> Result<()> {
 
         // Spawn a new task to handle each connection
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(inbound, client_addr, dest_addr_clone, latency_config_clone, packet_loss_config_clone).await {
+            if let Err(e) = handle_connection(
+                inbound,
+                client_addr,
+                dest_addr_clone,
+                latency_config_clone,
+                packet_loss_config_clone,
+            )
+            .await
+            {
                 error!("Error handling connection from {}: {:?}", client_addr, e);
             }
         });
@@ -123,34 +134,15 @@ async fn handle_connection(
         client_addr, dest_addr
     );
 
-    // Peek at the first few bytes to detect protocol
-    // let mut peek_buf = [0u8; 16];
-    // match inbound.peek(&mut peek_buf).await {
-    //     Ok(n) if n > 0 => {
-    //         let protocol_hint = if peek_buf[0] == 0x16 {
-    //             "TLS/SSL handshake"
-    //         } else if peek_buf.starts_with(b"GET ")
-    //             || peek_buf.starts_with(b"POST ")
-    //             || peek_buf.starts_with(b"PUT ")
-    //             || peek_buf.starts_with(b"HEAD ")
-    //         {
-    //             "HTTP request"
-    //         } else {
-    //             "Unknown protocol"
-    //         };
-    //         debug!(
-    //             "Detected incoming protocol: {} (first {} bytes: {:02x?})",
-    //             protocol_hint,
-    //             n,
-    //             &peek_buf[..n]
-    //         );
-    //     }
-    //     Ok(_) => debug!("No data available to peek"),
-    //     Err(e) => warn!("Failed to peek at incoming data: {}", e),
-    // }
-
     // Use custom bidirectional copy with packet loss simulation
-    match copy_bidirectional_with_faults(&mut inbound, &mut outbound, &mut fault_injector, &connection_id).await {
+    match copy_bidirectional_with_faults(
+        &mut inbound,
+        &mut outbound,
+        &mut fault_injector,
+        &connection_id,
+    )
+    .await
+    {
         Ok((client_to_server, server_to_client)) => {
             info!(
                 "Proxy connection completed: {} bytes client->server, {} bytes server->client",
@@ -189,10 +181,10 @@ async fn copy_bidirectional_with_faults(
                             // Simulate packet loss by not forwarding the data
                             continue;
                         }
-                        
+
                         // Apply latency per packet
                         fault_injector.apply_latency(connection_id).await;
-                        
+
                         match b.write_all(&buf_a[..n]).await {
                             Ok(()) => {
                                 total_a_to_b += n as u64;
@@ -204,7 +196,7 @@ async fn copy_bidirectional_with_faults(
                     Err(e) => return Err(e),
                 }
             }
-            
+
             // Read from B, write to A
             result_b = b.read(&mut buf_b) => {
                 match result_b {
@@ -215,10 +207,10 @@ async fn copy_bidirectional_with_faults(
                             // Simulate packet loss by not forwarding the data
                             continue;
                         }
-                        
+
                         // Apply latency per packet
                         fault_injector.apply_latency(connection_id).await;
-                        
+
                         match a.write_all(&buf_b[..n]).await {
                             Ok(()) => {
                                 total_b_to_a += n as u64;
