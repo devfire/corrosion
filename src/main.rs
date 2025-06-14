@@ -1,9 +1,9 @@
 mod cli;
 
 use anyhow::{Context, Result};
-use tokio::io;
+use tokio::io::{self};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -54,15 +54,51 @@ async fn handle_connection(
     client_addr: std::net::SocketAddr,
     dest_addr: String,
 ) -> Result<()> {
+    debug!("Attempting to connect to destination: {}", dest_addr);
+
     // Connect to the destination server
-    let mut outbound = TcpStream::connect(&dest_addr)
-        .await
-        .with_context(|| format!("Failed to connect to destination {}", dest_addr))?;
+    let mut outbound = match TcpStream::connect(&dest_addr).await {
+        Ok(stream) => {
+            info!("Successfully connected to destination: {}", dest_addr);
+            stream
+        }
+        Err(e) => {
+            error!("Failed to connect to destination {}: {}", dest_addr, e);
+            return Err(e)
+                .with_context(|| format!("Failed to connect to destination {}", dest_addr));
+        }
+    };
 
     debug!(
         "Established proxy connection: {} <-> {}",
         client_addr, dest_addr
     );
+
+    // Peek at the first few bytes to detect protocol
+    let mut peek_buf = [0u8; 16];
+    match inbound.peek(&mut peek_buf).await {
+        Ok(n) if n > 0 => {
+            let protocol_hint = if peek_buf[0] == 0x16 {
+                "TLS/SSL handshake"
+            } else if peek_buf.starts_with(b"GET ")
+                || peek_buf.starts_with(b"POST ")
+                || peek_buf.starts_with(b"PUT ")
+                || peek_buf.starts_with(b"HEAD ")
+            {
+                "HTTP request"
+            } else {
+                "Unknown protocol"
+            };
+            debug!(
+                "Detected incoming protocol: {} (first {} bytes: {:02x?})",
+                protocol_hint,
+                n,
+                &peek_buf[..n]
+            );
+        }
+        Ok(_) => debug!("No data available to peek"),
+        Err(e) => warn!("Failed to peek at incoming data: {}", e),
+    }
 
     // Use bidirectional copy to handle the proxy
     match io::copy_bidirectional(&mut inbound, &mut outbound).await {
