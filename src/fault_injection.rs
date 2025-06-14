@@ -148,10 +148,6 @@ impl FaultInjector {
         false
     }
 
-    /// Get packet loss configuration for logging
-    pub fn packet_loss_config(&self) -> &PacketLossConfig {
-        &self.packet_loss_config
-    }
 }
 
 #[cfg(test)]
