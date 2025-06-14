@@ -219,6 +219,107 @@ When packet loss simulation is enabled:
 
 The packet loss simulation operates at the application data level, simulating the effect of network packet loss on the data stream.
 
+## How Latency Injection Works in Detail
+
+This section provides a comprehensive explanation of the latency injection implementation and mechanics.
+
+### Configuration Structure
+
+The latency injection is configured through the [`LatencyConfig`](src/fault_injection.rs:8) struct:
+
+```rust
+pub struct LatencyConfig {
+    pub enabled: bool,           // Whether latency injection is active
+    pub fixed_ms: u64,          // Fixed delay in milliseconds
+    pub random_range: Option<(u64, u64)>, // Optional random delay range
+    pub probability: f64,        // Probability of applying latency (0.0-1.0)
+}
+```
+
+### Latency Application Process
+
+The latency injection happens in the [`apply_latency()`](src/fault_injection.rs:73) method following this flow:
+
+1. **Check if enabled**: If latency injection is disabled, skip entirely
+2. **Probability check**: Generate random number (0.0-1.0) and compare to configured probability
+3. **Calculate delay**: Combine fixed delay + random delay (if configured)
+4. **Apply delay**: Use `tokio::time::sleep()` for non-blocking delay
+5. **Continue**: Proceed with normal connection handling
+
+### Delay Calculation
+
+The [`calculate_delay()`](src/fault_injection.rs:100) method combines two types of delays:
+
+- **Fixed Delay**: A constant delay specified in `fixed_ms`
+- **Random Delay**: An optional random component within a specified range
+
+```rust
+fn calculate_delay(&mut self) -> u64 {
+    let mut total_delay = self.latency_config.fixed_ms;
+    
+    if let Some((min, max)) = self.latency_config.random_range {
+        let random_delay = self.rng.gen_range(min..=max);
+        total_delay += random_delay;
+    }
+    
+    total_delay
+}
+```
+
+### When Latency is Applied
+
+The key insight is **when** the latency is applied. Looking at [`handle_connection()`](src/main.rs:95), the latency is injected at line 109:
+
+```rust
+// Apply latency before connecting to destination
+fault_injector.apply_latency(&connection_id).await;
+
+// Connect to the destination server
+let mut outbound = match TcpStream::connect(&dest_addr).await {
+    // ... connection logic
+}
+```
+
+This means the latency is applied **before establishing the connection to the destination server**, simulating network delays that would occur during connection establishment.
+
+### Probability-Based Injection
+
+Not every connection experiences latency. The system uses a probability check:
+
+1. Generate a random number between 0.0 and 1.0
+2. If the random number ≤ configured probability, apply latency
+3. Otherwise, skip latency injection for this connection
+
+This allows for realistic simulation where only some connections are affected by network delays.
+
+### Real-World Example
+
+From the test file, you can see an example configuration:
+- **Fixed delay**: 500ms
+- **Random range**: 100-300ms
+- **Total expected latency**: 600-800ms per connection
+
+The [`test_latency.py`](test_latency.py:1) script demonstrates this by:
+1. Making HTTP requests through the proxy
+2. Measuring response times
+3. Showing the added latency in action
+
+### Implementation Details
+
+- **Async/Await**: Uses [`tokio::time::sleep()`](src/fault_injection.rs:96) for non-blocking delays
+- **Per-Connection**: Each connection gets its own [`FaultInjector`](src/fault_injection.rs:53) instance
+- **Logging**: Comprehensive logging shows when latency is applied and skipped
+- **Thread-Safe**: Uses [`StdRng`](src/fault_injection.rs:56) for random number generation
+
+### Key Characteristics
+
+- **Connection-Level**: Latency is applied once per connection, not per packet
+- **Transparent**: The client sees normal TCP behavior, just slower
+- **Configurable**: All parameters (delay, randomness, probability) are adjustable
+- **Realistic**: Simulates real network conditions where some connections are slower than others
+
+This design effectively simulates network latency conditions that applications might encounter in production, making it useful for testing how systems handle slow or unreliable network connections.
+
 ## Architecture
 
 The implementation follows Rust best practices:
