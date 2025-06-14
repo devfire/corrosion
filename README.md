@@ -129,7 +129,7 @@ cargo run -- --dest-ip httpbin.org --dest-port 443 --latency-enabled --latency-f
 python3 test_latency.py
 ```
 
-Expected output should show response times in the 600-800ms range (500ms fixed + 100-300ms random + network overhead).
+Expected output should show significantly higher response times due to per-packet latency injection. With 500ms fixed + 100-300ms random per packet, a typical HTTPS request with multiple packets will show cumulative delays (e.g., 4-5 seconds for 8-10 packets).
 
 ### Packet Loss Simulation
 
@@ -184,9 +184,9 @@ nc 127.0.0.1 8080
 1. The proxy parses command-line arguments or environment variables for bind and destination configuration
 2. The proxy binds to the specified local address and listens for incoming connections
 3. For each new connection, a separate Tokio task is spawned to handle it concurrently
-4. **Fault injection is applied** (if enabled) before and during connection handling
+4. **Fault injection is applied** (if enabled) during connection handling
 5. Each connection handler establishes a connection to the destination server
-6. Data is forwarded bidirectionally with fault injection applied to each data packet
+6. Data is forwarded bidirectionally with **per-packet fault injection** applied to each data packet
 7. Connections are properly closed when either side disconnects
 8. Errors are handled gracefully and logged with connection details
 
@@ -196,14 +196,15 @@ nc 127.0.0.1 8080
 
 When latency injection is enabled:
 
-1. **Connection established**: Client connects to the proxy
-2. **Probability check**: If probability < 1.0, a random check determines if latency should be applied
-3. **Latency calculation**:
-   - Start with fixed latency (if configured)
-   - Add random latency from specified range (if configured)
-4. **Delay application**: The calculated delay is applied using `tokio::time::sleep`
-5. **Destination connection**: After the delay, connection to the destination server is established
-6. **Normal proxying**: Data flows transparently between client and destination
+1. **Connection established**: Client connects to the proxy and destination connection is established
+2. **Per-packet processing**: For each data packet received from either direction:
+   - **Probability check**: If probability < 1.0, a random check determines if latency should be applied to this packet
+   - **Latency calculation**:
+     - Start with fixed latency (if configured)
+     - Add random latency from specified range (if configured)
+   - **Delay application**: The calculated delay is applied using `tokio::time::sleep`
+   - **Packet forwarding**: After the delay, the packet is forwarded to its destination
+3. **Cumulative effect**: Multiple packets result in cumulative latency, simulating realistic per-packet network delays
 
 #### Packet Loss Simulation
 
@@ -268,26 +269,33 @@ fn calculate_delay(&mut self) -> u64 {
 
 ### When Latency is Applied
 
-The key insight is **when** the latency is applied. Looking at [`handle_connection()`](src/main.rs:95), the latency is injected at line 109:
+The key insight is **when** the latency is applied. Looking at [`copy_bidirectional_with_faults()`](src/main.rs:172), the latency is injected for each packet in both directions:
 
 ```rust
-// Apply latency before connecting to destination
-fault_injector.apply_latency(&connection_id).await;
-
-// Connect to the destination server
-let mut outbound = match TcpStream::connect(&dest_addr).await {
-    // ... connection logic
+// For client->server packets
+if fault_injector.should_drop_packet(connection_id) {
+    continue; // Skip dropped packets
 }
+fault_injector.apply_latency(connection_id).await; // Apply latency per packet
+match b.write_all(&buf_a[..n]).await { ... }
+
+// For server->client packets
+if fault_injector.should_drop_packet(connection_id) {
+    continue; // Skip dropped packets
+}
+fault_injector.apply_latency(connection_id).await; // Apply latency per packet
+match a.write_all(&buf_b[..n]).await { ... }
 ```
 
-**Important**: The latency is applied **only once per connection during connection establishment**, not per packet or data transfer. This simulates network delays that would occur during the initial connection setup phase, such as:
+**Important**: The latency is applied **per packet** during data transfer, not just during connection establishment.
 
-- DNS resolution delays
+This simulates realistic network conditions where each packet experiences:
 - Network routing delays
-- Connection establishment overhead
-- Initial handshake delays
+- Transmission delays
+- Processing delays at network nodes
+- Variable network conditions affecting individual packets
 
-Once the connection is established and data begins flowing, there are no additional latency injections for individual packets or data chunks.
+Each data chunk (up to 8KB buffer size) is treated as a packet and experiences the configured latency independently.
 
 ### Probability-Based Injection
 
@@ -302,14 +310,16 @@ This allows for realistic simulation where only some connections are affected by
 ### Real-World Example
 
 From the test file, you can see an example configuration:
-- **Fixed delay**: 500ms
-- **Random range**: 100-300ms
-- **Total expected latency**: 600-800ms per connection
+- **Fixed delay**: 500ms per packet
+- **Random range**: 100-300ms per packet
+- **Total expected latency**: 600-800ms × number of packets (typically 4-5 seconds for HTTPS requests with 8-10 packets)
 
 The [`test_latency.py`](test_latency.py:1) script demonstrates this by:
-1. Making HTTP requests through the proxy
-2. Measuring response times
-3. Showing the added latency in action
+1. Making HTTPS requests through the proxy
+2. Measuring total response times
+3. Showing the cumulative per-packet latency in action
+
+For example, with 100ms per packet, a typical HTTPS request shows ~830ms total latency, indicating approximately 8-9 packets were processed.
 
 ### Implementation Details
 
@@ -320,13 +330,20 @@ The [`test_latency.py`](test_latency.py:1) script demonstrates this by:
 
 ### Key Characteristics
 
-- **Connection-Level Only**: Latency is applied **once per connection during establishment**, not per packet or data transfer
-- **Initial Delay**: Simulates connection setup delays (DNS, routing, handshake) rather than ongoing transmission delays
-- **Transparent**: Once connected, data flows at normal speed - the client only experiences the initial connection delay
-- **Configurable**: All parameters (delay, randomness, probability) are adjustable
-- **Realistic for Connection Issues**: Simulates real network conditions where connection establishment is slow but data transfer is normal
+- **Per-Packet Injection**: Latency is applied **to each individual packet** during data transfer, not just during connection establishment
+- **Bidirectional**: Both client→server and server→client packets experience latency independently
+- **Cumulative Effect**: Multiple packets result in cumulative delays, providing realistic network simulation
+- **Configurable**: All parameters (delay, randomness, probability) are adjustable per packet
+- **Realistic Network Simulation**: Simulates real network conditions where each packet experiences variable delays
 
-This design is particularly useful for testing how applications handle slow connection establishment, connection timeouts, and initial response delays, but does not simulate ongoing network latency during data transfer.
+This design is particularly useful for testing how applications handle:
+- Slow data transfer rates
+- Variable network conditions
+- Per-packet network delays
+- Cumulative latency effects
+- Real-world network behavior where individual packets experience delays
+
+The per-packet approach provides much more realistic network latency simulation compared to connection-level delays only.
 
 ## Architecture
 
