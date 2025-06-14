@@ -280,7 +280,14 @@ let mut outbound = match TcpStream::connect(&dest_addr).await {
 }
 ```
 
-This means the latency is applied **before establishing the connection to the destination server**, simulating network delays that would occur during connection establishment.
+**Important**: The latency is applied **only once per connection during connection establishment**, not per packet or data transfer. This simulates network delays that would occur during the initial connection setup phase, such as:
+
+- DNS resolution delays
+- Network routing delays
+- Connection establishment overhead
+- Initial handshake delays
+
+Once the connection is established and data begins flowing, there are no additional latency injections for individual packets or data chunks.
 
 ### Probability-Based Injection
 
@@ -313,12 +320,13 @@ The [`test_latency.py`](test_latency.py:1) script demonstrates this by:
 
 ### Key Characteristics
 
-- **Connection-Level**: Latency is applied once per connection, not per packet
-- **Transparent**: The client sees normal TCP behavior, just slower
+- **Connection-Level Only**: Latency is applied **once per connection during establishment**, not per packet or data transfer
+- **Initial Delay**: Simulates connection setup delays (DNS, routing, handshake) rather than ongoing transmission delays
+- **Transparent**: Once connected, data flows at normal speed - the client only experiences the initial connection delay
 - **Configurable**: All parameters (delay, randomness, probability) are adjustable
-- **Realistic**: Simulates real network conditions where some connections are slower than others
+- **Realistic for Connection Issues**: Simulates real network conditions where connection establishment is slow but data transfer is normal
 
-This design effectively simulates network latency conditions that applications might encounter in production, making it useful for testing how systems handle slow or unreliable network connections.
+This design is particularly useful for testing how applications handle slow connection establishment, connection timeouts, and initial response delays, but does not simulate ongoing network latency during data transfer.
 
 ## Architecture
 
