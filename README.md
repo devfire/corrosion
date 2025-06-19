@@ -207,9 +207,32 @@ cargo run -- --dest-ip httpbin.org --dest-port 443 \
 
 #### Testing Bandwidth Throttling
 
-Use the included demo script to test bandwidth throttling:
+First, install speedtest:
 ```bash
-./demo_bandwidth_throttling.sh
+snap install speedtest
+```
+
+Then, get the closest server ID:
+```bash
+speedtest -L
+Closest servers:
+
+    ID  Name                           Location             Country
+==============================================================================
+ **67937**  AT&T                           Raleigh, NC          United States
+ 29113  Duke University                Durham, NC           United States
+ 58326  Spectrum                       Durham, NC           United States
+ 14774  UNC Chapel Hill                Chapel Hill, NC      United States
+  5401  Optimum Online                 Rocky Mount, NC      United States
+ 53507  Brightspeed                    Rocky Mount, NC      United States
+ 48128  Metronet                       Fayetteville, NC     United States
+ 69565  Brightspeed                    Fayetteville, NC     United States
+
+```
+
+Then, run the test:
+```bash
+speedtest -s 67937 -vv
 ```
 
 Or test manually:
