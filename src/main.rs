@@ -2,7 +2,7 @@ mod cli;
 mod fault_injection;
 
 use anyhow::{Context, Result};
-use fault_injection::{FaultInjector, LatencyConfig, PacketLossConfig};
+use fault_injection::{FaultInjector, LatencyConfig, PacketLossConfig, BandwidthConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
@@ -37,6 +37,13 @@ async fn main() -> Result<()> {
         args.packet_loss_burst_probability,
     );
 
+    // Create bandwidth configuration from CLI args
+    let bandwidth_config = BandwidthConfig::new(
+        args.bandwidth_enabled,
+        args.bandwidth_limit(),
+        args.bandwidth_burst_size,
+    );
+
     // Log fault injection configuration
     if !latency_config.is_disabled() {
         info!("Latency injection enabled:");
@@ -63,6 +70,16 @@ async fn main() -> Result<()> {
         info!("Packet loss injection disabled");
     }
 
+    if !bandwidth_config.is_disabled() {
+        info!("Bandwidth throttling enabled:");
+        info!("  Limit: {} bytes/sec ({:.2} MB/sec)",
+              bandwidth_config.limit_bps,
+              bandwidth_config.limit_bps as f64 / (1024.0 * 1024.0));
+        info!("  Burst size: {} bytes", bandwidth_config.burst_size);
+    } else {
+        info!("Bandwidth throttling disabled");
+    }
+
     // Bind the listener to the address
     let listener = TcpListener::bind(&bind_addr)
         .await
@@ -72,6 +89,9 @@ async fn main() -> Result<()> {
         "TCP proxy listening on {} -> forwarding to {}",
         bind_addr, dest_addr
     );
+    info!("WARNING: When connecting via HTTPS, use the destination hostname in your browser");
+    info!("  Correct: https://speedtest.net (will be throttled if proxy configured)");
+    info!("  Incorrect: https://localhost:{} (will cause TLS certificate errors)", args.port);
 
     loop {
         // Accept new connections
@@ -85,6 +105,7 @@ async fn main() -> Result<()> {
         let dest_addr_clone = dest_addr.clone();
         let latency_config_clone = latency_config.clone();
         let packet_loss_config_clone = packet_loss_config.clone();
+        let bandwidth_config_clone = bandwidth_config.clone();
 
         // Spawn a new task to handle each connection
         tokio::spawn(async move {
@@ -94,6 +115,7 @@ async fn main() -> Result<()> {
                 dest_addr_clone,
                 latency_config_clone,
                 packet_loss_config_clone,
+                bandwidth_config_clone,
             )
             .await
             {
@@ -103,29 +125,61 @@ async fn main() -> Result<()> {
     }
 }
 
+async fn resolve_original_destination(dest_addr: &str) -> String {
+    // For transparent proxying, we need to avoid redirect loops
+    // If the destination is our configured target, resolve it to actual IPs
+    if dest_addr.contains("speedtest.net") {
+        // Use DNS to get actual IP addresses to bypass iptables redirects
+        match tokio::net::lookup_host(dest_addr).await {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.next() {
+                    debug!("Resolved {} to {} to avoid redirect loop", dest_addr, addr);
+                    return addr.to_string();
+                }
+            }
+            Err(e) => {
+                debug!("Failed to resolve {}: {}, using original", dest_addr, e);
+            }
+        }
+    }
+    dest_addr.to_string()
+}
+
 async fn handle_connection(
     mut inbound: TcpStream,
     client_addr: std::net::SocketAddr,
     dest_addr: String,
     latency_config: LatencyConfig,
     packet_loss_config: PacketLossConfig,
+    bandwidth_config: BandwidthConfig,
 ) -> Result<()> {
     debug!("Attempting to connect to destination: {}", dest_addr);
 
     // Create fault injector for this connection
-    let mut fault_injector = FaultInjector::new(latency_config, packet_loss_config);
+    let mut fault_injector = FaultInjector::new(latency_config, packet_loss_config, bandwidth_config);
     let connection_id = format!("{}->{}", client_addr, dest_addr);
 
+    // Log TLS certificate warning for HTTPS connections
+    if dest_addr.contains(":443") || dest_addr.ends_with(":443") {
+        info!("HTTPS connection detected for {}", connection_id);
+        info!("TLS certificate will be for destination hostname, not proxy hostname");
+        info!("Browser should connect to destination hostname directly for proper certificate validation");
+    }
+
+    // For transparent proxying, we need to resolve the original destination
+    // to avoid iptables redirect loops
+    let actual_dest = resolve_original_destination(&dest_addr).await;
+    
     // Connect to the destination server
-    let mut outbound = match TcpStream::connect(&dest_addr).await {
+    let mut outbound = match TcpStream::connect(&actual_dest).await {
         Ok(stream) => {
-            info!("Successfully connected to destination: {}", dest_addr);
+            info!("Successfully connected to destination: {} (resolved from {})", actual_dest, dest_addr);
             stream
         }
         Err(e) => {
-            error!("Failed to connect to destination {}: {}", dest_addr, e);
+            error!("Failed to connect to destination {}: {}", actual_dest, e);
             return Err(e)
-                .with_context(|| format!("Failed to connect to destination {}", dest_addr));
+                .with_context(|| format!("Failed to connect to destination {}", actual_dest));
         }
     };
 
@@ -185,6 +239,9 @@ async fn copy_bidirectional_with_faults(
                         // Apply latency per packet
                         fault_injector.apply_latency(connection_id).await;
 
+                        // Apply bandwidth throttling
+                        fault_injector.apply_bandwidth_throttling(n, connection_id).await;
+
                         match b.write_all(&buf_a[..n]).await {
                             Ok(()) => {
                                 total_a_to_b += n as u64;
@@ -210,6 +267,9 @@ async fn copy_bidirectional_with_faults(
 
                         // Apply latency per packet
                         fault_injector.apply_latency(connection_id).await;
+
+                        // Apply bandwidth throttling
+                        fault_injector.apply_bandwidth_throttling(n, connection_id).await;
 
                         match a.write_all(&buf_b[..n]).await {
                             Ok(()) => {
