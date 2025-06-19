@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # DNS Redirect Setup for Transparent Proxying
 # This script modifies /etc/hosts to redirect speedtest.net to localhost

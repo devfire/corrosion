@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Transparent Proxy Setup Script for Fault Injection
 # This script sets up iptables rules to intercept traffic to speedtest.net
