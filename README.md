@@ -181,19 +181,11 @@ The proxy supports bandwidth throttling to limit connection throughput and simul
 
 #### Basic Bandwidth Throttling
 
-Limit bandwidth to 100 KB/s:
-```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 100kbps
-```
+NOTE: Must run as `proxy-injector` in order for `iptables` transparent proxy to work.
 
-Limit bandwidth to 1 MB/s:
+Limit bandwidth to 1MBps:
 ```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 1mbps
-```
-
-Limit bandwidth to 50,000 bytes per second:
-```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 50000bps
+sudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip rlgncook.speedtest.sbcglobal.net --dest-port 8080 --bandwidth-enabled --bandwidth-limit 1mbps
 ```
 
 #### Advanced Bandwidth Configuration
@@ -629,6 +621,247 @@ This implementation provides realistic bandwidth simulation that closely mimics 
 
 The per-packet token bucket approach provides much more realistic bandwidth throttling compared to simple connection-level rate limiting.
 
+## Transparent Proxy Setup with iptables
+
+The [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh:1) script provides transparent proxy functionality using iptables rules. This allows intercepting and redirecting network traffic to the fault injection proxy without requiring application configuration changes.
+
+### How Transparent Proxy Works
+
+**The Problem**: When setting up a transparent proxy, a common issue is the **infinite redirection loop**:
+1. Client sends traffic to destination server
+2. iptables redirects traffic to local proxy
+3. Proxy forwards traffic to original destination
+4. iptables redirects the proxy's own traffic back to the proxy
+5. **Infinite loop occurs**
+
+**The Solution**: The script solves this by creating a **dedicated system user** for the proxy and configuring iptables to exclude traffic from that user, breaking the redirection loop.
+
+### Script Configuration
+
+The script uses these key configuration variables:
+
+```bash
+readonly PROXY_USER="proxy-injector"           # Dedicated user for the proxy
+readonly PROXY_PORT="8080"                     # Local port proxy listens on
+readonly TARGET_HOST="rlgncook.speedtest.sbcglobal.net"  # Target to intercept
+readonly TARGET_PORT="8080"                    # Target port to intercept
+```
+
+### Detailed Operation Flow
+
+#### 1. Environment Setup and Validation
+
+**Root Privilege Check**: The script requires root privileges for iptables manipulation and user management:
+```bash
+if [[ $EUID -ne 0 ]]; then
+   echo "[!] This script must be run as root. Aborting." >&2
+   exit 1
+fi
+```
+
+**Cleanup Trap Setup**: Registers a cleanup function to remove all iptables rules on script exit:
+```bash
+trap cleanup INT TERM EXIT
+```
+
+#### 2. Dedicated User Creation
+
+**User Existence Check**: Verifies if the proxy user already exists:
+```bash
+if ! id -u "$PROXY_USER" >/dev/null 2>&1; then
+    useradd --system --shell /usr/sbin/nologin "$PROXY_USER"
+fi
+```
+
+**User Properties**:
+- **System user**: Created with `--system` flag (UID < 1000)
+- **No login shell**: Uses `/usr/sbin/nologin` to prevent interactive login
+- **Security**: Dedicated user isolates proxy process and enables iptables exclusion
+
+#### 3. DNS Resolution for IPv4 and IPv6
+
+**Dual-Stack Resolution**: Resolves the target hostname to both IPv4 and IPv6 addresses:
+```bash
+ipv4_ips=($(getent ahostsv4 "$TARGET_HOST" | awk '{ print $1 }' | sort -u))
+ipv6_ips=($(getent ahostsv6 "$TARGET_HOST" | awk '{ print $1 }' | sort -u))
+```
+
+**Why Both Protocols**: Modern networks use dual-stack configurations, so the script handles both IPv4 and IPv6 traffic to ensure complete interception.
+
+#### 4. IP Forwarding Configuration
+
+**Enable IP Forwarding**: Required for the system to forward packets between interfaces:
+```bash
+ORIGINAL_IP_FORWARD=$(cat /proc/sys/net/ipv4/ip_forward)
+if [[ "$ORIGINAL_IP_FORWARD" != "1" ]]; then
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+fi
+```
+
+**State Preservation**: Saves the original forwarding state to restore it during cleanup.
+
+#### 5. iptables Rule Creation
+
+**The Core iptables Rule**: For each resolved IP address, the script creates rules like:
+```bash
+iptables -t nat -A OUTPUT -p tcp -d $ip --dport $TARGET_PORT -m owner ! --uid-owner $proxy_uid -j REDIRECT --to-port $PROXY_PORT
+```
+
+**Rule Breakdown**:
+- **`-t nat`**: Uses the NAT table for address translation
+- **`-A OUTPUT`**: Appends to OUTPUT chain (outgoing traffic)
+- **`-p tcp`**: Matches TCP protocol only
+- **`-d $ip --dport $TARGET_PORT`**: Matches traffic to specific destination IP and port
+- **`-m owner ! --uid-owner $proxy_uid`**: **Critical**: Excludes traffic from the proxy user (prevents loops)
+- **`-j REDIRECT --to-port $PROXY_PORT`**: Redirects matching traffic to local proxy port
+
+**IPv6 Support**: Identical rules are created using `ip6tables` for IPv6 addresses.
+
+#### 6. Loop Prevention Mechanism
+
+**The Key Insight**: The `! --uid-owner $proxy_uid` condition is what prevents infinite loops:
+
+1. **Normal traffic flow**:
+   - User application → Target server
+   - iptables matches (not from proxy user) → Redirects to proxy
+   - Proxy receives traffic
+
+2. **Proxy forwarding**:
+   - Proxy (running as proxy-injector user) → Target server
+   - iptables checks owner → Traffic is from proxy user → **No redirection**
+   - Traffic flows directly to target server
+
+**Visual Flow**:
+```
+[Client App] ---> [iptables] ---> [Proxy:8080] ---> [Target Server]
+                     ↑                ↓
+                  Redirects        Runs as proxy-injector
+                  (not proxy       (bypasses iptables)
+                   user traffic)
+```
+
+#### 7. Rule Management and Cleanup
+
+**Rule Tracking**: The script maintains an array of all added rules:
+```bash
+declare -a ADDED_RULES
+ADDED_RULES+=("$full_command")
+```
+
+**Cleanup Process**: On script exit, rules are removed in reverse order:
+```bash
+for ((i=${#ADDED_RULES[@]}-1; i>=0; i--)); do
+    local delete_command="${full_rule_command/-A/-D}"  # Replace -A with -D
+    eval "$delete_command" 2>/dev/null
+done
+```
+
+**State Restoration**: IP forwarding is restored to its original value.
+
+### Usage Instructions
+
+#### 1. Configure the Script
+Edit the configuration variables in [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh:17):
+```bash
+readonly PROXY_USER="proxy-injector"
+readonly PROXY_PORT="8080"
+readonly TARGET_HOST="your-target-host.com"
+readonly TARGET_PORT="80"
+```
+
+#### 2. Run the Setup Script
+```bash
+sudo ./setup_iptables_dedicated_user.sh
+```
+
+The script will:
+- Create the `proxy-injector` user if needed
+- Resolve target host to IP addresses
+- Add iptables rules for transparent redirection
+- Display success message and wait
+
+#### 3. Run the Proxy as the Dedicated User
+```bash
+sudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip your-target-host.com --dest-port 80
+```
+
+#### 4. Test the Transparent Proxy
+Applications can now connect directly to the target host, and traffic will be transparently intercepted:
+```bash
+curl http://your-target-host.com/  # Traffic automatically goes through proxy
+```
+
+#### 5. Cleanup
+Press `Ctrl+C` in the setup script terminal to cleanly remove all iptables rules and restore the original system state.
+
+### Security Considerations
+
+**Dedicated User Benefits**:
+- **Process Isolation**: Proxy runs with minimal privileges
+- **Loop Prevention**: Enables iptables owner-based exclusion
+- **Security**: Reduces attack surface by using non-login system user
+
+**Root Privileges**: Required only for:
+- iptables rule manipulation
+- System user creation
+- IP forwarding configuration
+
+**Network Impact**: The transparent proxy intercepts **all** traffic to the specified target, affecting all applications on the system.
+
+### Troubleshooting
+
+**Common Issues**:
+
+1. **Permission Denied**: Ensure script is run with `sudo`
+2. **User Creation Failed**: Check if `useradd` is available and system supports user creation
+3. **DNS Resolution Failed**: Verify target hostname is resolvable and network connectivity exists
+4. **iptables Rules Failed**: Check if iptables/ip6tables are installed and kernel supports NAT
+5. **Proxy Connection Failed**: Ensure proxy is running as the correct user (`proxy-injector`)
+
+**Verification Commands**:
+```bash
+# Check if user was created
+id proxy-injector
+
+# View active iptables rules
+sudo iptables -t nat -L OUTPUT -v
+
+# Check IP forwarding status
+cat /proc/sys/net/ipv4/ip_forward
+
+# Test DNS resolution
+getent ahosts your-target-host.com
+```
+
+### Integration with Fault Injection
+
+The transparent proxy setup enables **system-wide fault injection** without application modifications:
+
+1. **Setup Phase**: Run [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh:1) to configure transparent redirection
+2. **Proxy Phase**: Run fault injection proxy as `proxy-injector` user with desired fault parameters
+3. **Testing Phase**: Applications connect normally to target hosts, experiencing injected faults transparently
+
+**Example Complete Workflow**:
+```bash
+# Terminal 1: Setup transparent proxy
+sudo ./setup_iptables_dedicated_user.sh
+
+# Terminal 2: Run fault injection proxy
+sudo -u proxy-injector ./target/release/fault-injection \
+  --port 8080 --dest-ip httpbin.org --dest-port 80 \
+  --latency-enabled --latency-fixed-ms 500 \
+  --packet-loss-enabled --packet-loss-probability 0.1
+
+# Terminal 3: Test applications (traffic automatically intercepted)
+curl http://httpbin.org/get  # Experiences 500ms latency + 10% packet loss
+```
+
+This transparent approach is particularly valuable for:
+- **Legacy application testing**: No code changes required
+- **System-level fault injection**: Affects all network traffic to target
+- **Realistic testing**: Applications behave exactly as in production
+- **Network simulation**: Simulates real network conditions transparently
+
 ## Architecture
 
 The implementation follows Rust best practices:
@@ -660,4 +893,4 @@ The fault injection framework is designed to be extensible. Planned features inc
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
 - **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model
-- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttlingsudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip speedtest.net --dest-port 443 --bandwidth-enabled --bandwidth-limit 1kbps
+- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttlingsudo -u proxy-injector ./target/
