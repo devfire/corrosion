@@ -12,7 +12,7 @@ Usage:
 
 Prerequisites:
     - Start the proxy with bandwidth throttling enabled:
-      cargo run -- --dest-ip httpbin.org --dest-port 80 --bandwidth-enabled --bandwidth-limit-kbps 50
+      cargo run -- --dest-ip httpbin.org --dest-port 80 --bandwidth-enabled --bandwidth-limit 50kbps
 
 Expected behavior:
     - Download speeds should be limited to approximately 50 KB/s
@@ -141,7 +141,7 @@ def main():
         print("❌ All tests failed! Make sure the proxy is running with bandwidth throttling enabled.")
         print()
         print("Start the proxy with:")
-        print("cargo run -- --dest-ip httpbin.org --dest-port 80 --bandwidth-enabled --bandwidth-limit-kbps 50")
+        print("cargo run -- --dest-ip httpbin.org --dest-port 80 --bandwidth-enabled --bandwidth-limit 50kbps")
 
 if __name__ == "__main__":
     main()

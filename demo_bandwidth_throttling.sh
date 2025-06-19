@@ -25,7 +25,7 @@ cargo run -- \
     --dest-ip 127.0.0.1 \
     --dest-port 8000 \
     --bandwidth-enabled \
-    --bandwidth-limit-kbps 10 \
+    --bandwidth-limit 10kbps \
     --bandwidth-burst-size 4096 &
 PROXY_PID=$!
 

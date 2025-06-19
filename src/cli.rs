@@ -56,17 +56,9 @@ pub struct Args {
     #[arg(long, default_value = "false")]
     pub bandwidth_enabled: bool,
 
-    /// Maximum bandwidth in bytes per second (0 = unlimited)
-    #[arg(long, default_value = "0")]
-    pub bandwidth_limit_bps: u64,
-
-    /// Bandwidth limit in kilobytes per second (alternative to bps)
-    #[arg(long, value_parser = parse_bandwidth_kbps)]
-    pub bandwidth_limit_kbps: Option<u64>,
-
-    /// Bandwidth limit in megabytes per second (alternative to bps/kbps)
-    #[arg(long, value_parser = parse_bandwidth_mbps)]
-    pub bandwidth_limit_mbps: Option<u64>,
+    /// Bandwidth limit with unit (e.g., "100kbps", "1mbps", "50000bps", "0" = unlimited)
+    #[arg(long, value_parser = parse_bandwidth_limit, default_value = "0")]
+    pub bandwidth_limit: u64,
 
     /// Bandwidth throttling burst size in bytes (allows temporary bursts)
     #[arg(long, default_value = "8192")]
@@ -91,16 +83,32 @@ fn parse_latency_range(s: &str) -> Result<(u64, u64), String> {
     Ok((min, max))
 }
 
-fn parse_bandwidth_kbps(s: &str) -> Result<u64, String> {
-    let kbps = s.parse::<u64>()
-        .map_err(|_| "Invalid bandwidth value in kbps".to_string())?;
-    Ok(kbps * 1024) // Convert to bytes per second
-}
-
-fn parse_bandwidth_mbps(s: &str) -> Result<u64, String> {
-    let mbps = s.parse::<u64>()
-        .map_err(|_| "Invalid bandwidth value in mbps".to_string())?;
-    Ok(mbps * 1024 * 1024) // Convert to bytes per second
+fn parse_bandwidth_limit(s: &str) -> Result<u64, String> {
+    if s == "0" {
+        return Ok(0); // Unlimited
+    }
+    
+    let s = s.to_lowercase();
+    
+    if let Some(stripped) = s.strip_suffix("mbps") {
+        // Handle "mbps" suffix (megabytes per second) - check first
+        let mbps = stripped.parse::<u64>()
+            .map_err(|_| "Invalid bandwidth value for mbps".to_string())?;
+        Ok(mbps * 1024 * 1024)
+    } else if let Some(stripped) = s.strip_suffix("kbps") {
+        // Handle "kbps" suffix (kilobytes per second) - check second
+        let kbps = stripped.parse::<u64>()
+            .map_err(|_| "Invalid bandwidth value for kbps".to_string())?;
+        Ok(kbps * 1024)
+    } else if let Some(stripped) = s.strip_suffix("bps") {
+        // Handle "bps" suffix (bytes per second) - check last
+        stripped.parse::<u64>()
+            .map_err(|_| "Invalid bandwidth value for bps".to_string())
+    } else {
+        // No suffix, assume bytes per second
+        s.parse::<u64>()
+            .map_err(|_| "Invalid bandwidth value (use format like '100kbps', '1mbps', or '50000bps')".to_string())
+    }
 }
 
 impl Args {
@@ -116,15 +124,8 @@ impl Args {
         format!("{}:{}", self.dest_ip, self.dest_port)
     }
 
-    /// Calculate the final bandwidth limit in bytes per second
+    /// Get the bandwidth limit in bytes per second
     pub fn bandwidth_limit(&self) -> u64 {
-        // Priority: mbps > kbps > bps
-        if let Some(mbps_bytes) = self.bandwidth_limit_mbps {
-            mbps_bytes
-        } else if let Some(kbps_bytes) = self.bandwidth_limit_kbps {
-            kbps_bytes
-        } else {
-            self.bandwidth_limit_bps
-        }
+        self.bandwidth_limit
     }
 }

@@ -71,9 +71,7 @@ cargo run -- --help
 
 **Bandwidth Throttling:**
 - `--bandwidth-enabled`: Enable bandwidth throttling (default: `false`)
-- `--bandwidth-limit-bps`: Maximum bandwidth in bytes per second (default: `0` = unlimited)
-- `--bandwidth-limit-kbps`: Bandwidth limit in kilobytes per second (alternative to bps)
-- `--bandwidth-limit-mbps`: Bandwidth limit in megabytes per second (alternative to bps/kbps)
+- `--bandwidth-limit`: Bandwidth limit with unit (e.g., "100kbps", "1mbps", "50000bps", "0" = unlimited) (default: `0`)
 - `--bandwidth-burst-size`: Burst size in bytes for token bucket algorithm (default: `8192`)
 
 Command-line arguments take precedence over environment variables.
@@ -185,24 +183,24 @@ The proxy supports bandwidth throttling to limit connection throughput and simul
 
 Limit bandwidth to 100 KB/s:
 ```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 100
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 100kbps
 ```
 
 Limit bandwidth to 1 MB/s:
 ```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-mbps 1
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 1mbps
 ```
 
 Limit bandwidth to 50,000 bytes per second:
 ```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-bps 50000
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 50000bps
 ```
 
 #### Advanced Bandwidth Configuration
 
 Configure bandwidth with custom burst size (allows temporary bursts above the limit):
 ```bash
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 50 --bandwidth-burst-size 16384
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 50kbps --bandwidth-burst-size 16384
 ```
 
 #### Combined Fault Injection
@@ -210,7 +208,7 @@ cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwid
 Combine bandwidth throttling with latency and packet loss:
 ```bash
 cargo run -- --dest-ip httpbin.org --dest-port 443 \
-  --bandwidth-enabled --bandwidth-limit-kbps 100 \
+  --bandwidth-enabled --bandwidth-limit 100kbps \
   --latency-enabled --latency-fixed-ms 100 \
   --packet-loss-enabled --packet-loss-probability 0.05
 ```
@@ -225,7 +223,7 @@ Use the included demo script to test bandwidth throttling:
 Or test manually:
 ```bash
 # Start the proxy with bandwidth throttling
-cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 10
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit 10kbps
 
 # In another terminal, test download speed
 curl -o /dev/null -w "%{speed_download}\n" http://127.0.0.1:8080/bytes/1048576
@@ -527,7 +525,7 @@ The token bucket algorithm allows for **burst traffic** within limits:
 - **Burst Exhaustion**: Once burst tokens are consumed, traffic returns to steady-state rate limiting
 
 #### Example Burst Calculation
-With configuration: `--bandwidth-limit-kbps 100 --bandwidth-burst-size 16384`
+With configuration: `--bandwidth-limit 100kbps --bandwidth-burst-size 16384`
 
 - **Steady rate**: 100 KB/s (102,400 bytes/second)
 - **Burst capacity**: 16,384 bytes
@@ -567,7 +565,7 @@ delay_seconds = tokens_deficit / bandwidth_limit_bps
 
 #### Conservative Throttling
 ```bash
---bandwidth-limit-kbps 50 --bandwidth-burst-size 4096
+--bandwidth-limit 50kbps --bandwidth-burst-size 4096
 ```
 - **Effect**: Tight bandwidth control with small burst allowance
 - **Use case**: Simulating slow network connections
@@ -575,7 +573,7 @@ delay_seconds = tokens_deficit / bandwidth_limit_bps
 
 #### Generous Burst Allowance
 ```bash
---bandwidth-limit-mbps 1 --bandwidth-burst-size 65536
+--bandwidth-limit 1mbps --bandwidth-burst-size 65536
 ```
 - **Effect**: 1 MB/s average with 64KB burst capacity
 - **Use case**: Simulating networks with good burst tolerance
@@ -583,7 +581,7 @@ delay_seconds = tokens_deficit / bandwidth_limit_bps
 
 #### Strict Rate Limiting
 ```bash
---bandwidth-limit-bps 10240 --bandwidth-burst-size 1024
+--bandwidth-limit 10240bps --bandwidth-burst-size 1024
 ```
 - **Effect**: Very tight control with minimal burst allowance
 - **Use case**: Testing application behavior under severe bandwidth constraints
