@@ -89,6 +89,9 @@ async fn main() -> Result<()> {
         "TCP proxy listening on {} -> forwarding to {}",
         bind_addr, dest_addr
     );
+    info!("WARNING: When connecting via HTTPS, use the destination hostname in your browser");
+    info!("  Correct: https://speedtest.net (will be throttled if proxy configured)");
+    info!("  Incorrect: https://localhost:{} (will cause TLS certificate errors)", args.port);
 
     loop {
         // Accept new connections
@@ -135,6 +138,13 @@ async fn handle_connection(
     // Create fault injector for this connection
     let mut fault_injector = FaultInjector::new(latency_config, packet_loss_config, bandwidth_config);
     let connection_id = format!("{}->{}", client_addr, dest_addr);
+
+    // Log TLS certificate warning for HTTPS connections
+    if dest_addr.contains(":443") || dest_addr.ends_with(":443") {
+        info!("HTTPS connection detected for {}", connection_id);
+        info!("TLS certificate will be for destination hostname, not proxy hostname");
+        info!("Browser should connect to destination hostname directly for proper certificate validation");
+    }
 
     // Connect to the destination server
     let mut outbound = match TcpStream::connect(&dest_addr).await {
