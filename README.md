@@ -181,7 +181,12 @@ The proxy supports bandwidth throttling to limit connection throughput and simul
 
 #### Basic Bandwidth Throttling
 
-NOTE: Must run as `proxy-injector` in order for `iptables` transparent proxy to work.
+NOTE: While you do not need to setup a dedicated `proxy-injector` user ahead of time,
+`corrosion` must run as `proxy-injector` in order for `iptables` transparent proxy to work.
+
+If you don't, you will get TLS certificate errors.
+
+For more details, please see [`setup_iptables_dedicated_user.sh`](src/setup_iptables_dedicated_user.sh).
 
 Limit bandwidth to 1MBps:
 ```bash
