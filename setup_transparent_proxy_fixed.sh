@@ -1,8 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Transparent Proxy Setup Script for Fault Injection
-# This script sets up iptables rules to intercept traffic to speedtest.net
-# and redirect it through your fault injection proxy
+# Fixed Transparent Proxy Setup Script for Fault Injection
+# This version avoids the redirect loop by using a different approach
 
 set -e
 
@@ -17,13 +16,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== Transparent Proxy Setup for Fault Injection ===${NC}"
+echo -e "${GREEN}=== Fixed Transparent Proxy Setup for Fault Injection ===${NC}"
 echo
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}Error: This script must be run as root (use sudo)${NC}"
-   echo "Usage: sudo ./setup_transparent_proxy.sh"
+   echo "Usage: sudo ./setup_transparent_proxy_fixed.sh"
    exit 1
 fi
 
@@ -52,28 +51,30 @@ for ip in $SPEEDTEST_IPS; do
 done
 echo
 
-# Function to setup iptables rules
+# Function to setup iptables rules with loop prevention
 setup_iptables() {
-    echo -e "${YELLOW}Setting up iptables rules...${NC}"
+    echo -e "${YELLOW}Setting up iptables rules with loop prevention...${NC}"
     
     # Create a new chain for our transparent proxy
     iptables -t nat -N TRANSPARENT_PROXY 2>/dev/null || true
     
-    # Redirect traffic to speedtest.net IPs to our proxy
-    # But exclude traffic originating from localhost to avoid loops
+    # Create a chain to mark packets from our proxy
+    iptables -t mangle -N PROXY_MARK 2>/dev/null || true
+    
+    # Mark packets from our proxy process to avoid redirecting them
+    iptables -t mangle -A OUTPUT -p tcp --sport $PROXY_PORT -j MARK --set-mark 1
+    iptables -t mangle -A OUTPUT -p tcp --dport $TARGET_PORT -m owner --uid-owner $(id -u) -j MARK --set-mark 1
+    
+    # Redirect traffic to speedtest.net IPs to our proxy, but skip marked packets
     for ip in $SPEEDTEST_IPS; do
-        echo "  Adding rule for $ip:$TARGET_PORT -> localhost:$PROXY_PORT"
-        # Only redirect traffic that doesn't originate from localhost (avoid proxy loops)
-        iptables -t nat -A TRANSPARENT_PROXY -d $ip -p tcp --dport $TARGET_PORT ! -s 127.0.0.1 -j REDIRECT --to-port $PROXY_PORT
+        echo "  Adding rule for $ip:$TARGET_PORT -> localhost:$PROXY_PORT (with loop prevention)"
+        iptables -t nat -A TRANSPARENT_PROXY -d $ip -p tcp --dport $TARGET_PORT -m mark ! --mark 1 -j REDIRECT --to-port $PROXY_PORT
     done
     
     # Insert the chain into OUTPUT (for local traffic)
     iptables -t nat -I OUTPUT -j TRANSPARENT_PROXY
     
-    # Optional: Also intercept forwarded traffic (if acting as router)
-    # iptables -t nat -I PREROUTING -j TRANSPARENT_PROXY
-    
-    echo -e "${GREEN}✓ iptables rules configured${NC}"
+    echo -e "${GREEN}✓ iptables rules configured with loop prevention${NC}"
 }
 
 # Function to remove iptables rules
@@ -83,12 +84,15 @@ cleanup_iptables() {
     # Remove the chain from OUTPUT
     iptables -t nat -D OUTPUT -j TRANSPARENT_PROXY 2>/dev/null || true
     
-    # Remove the chain from PREROUTING if it exists
-    iptables -t nat -D PREROUTING -j TRANSPARENT_PROXY 2>/dev/null || true
-    
-    # Flush and delete the custom chain
+    # Flush and delete the custom chains
     iptables -t nat -F TRANSPARENT_PROXY 2>/dev/null || true
     iptables -t nat -X TRANSPARENT_PROXY 2>/dev/null || true
+    
+    # Clean up mangle table
+    iptables -t mangle -F PROXY_MARK 2>/dev/null || true
+    iptables -t mangle -X PROXY_MARK 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --sport $PROXY_PORT -j MARK --set-mark 1 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --dport $TARGET_PORT -m owner --uid-owner $(id -u) -j MARK --set-mark 1 2>/dev/null || true
     
     echo -e "${GREEN}✓ iptables rules cleaned up${NC}"
 }
@@ -100,18 +104,19 @@ trap cleanup_iptables EXIT
 setup_iptables
 
 echo
-echo -e "${GREEN}=== Transparent Proxy Active ===${NC}"
+echo -e "${GREEN}=== Fixed Transparent Proxy Active ===${NC}"
 echo "Traffic to $TARGET_HOST:$TARGET_PORT is now being intercepted"
 echo "and redirected through your fault injection proxy on port $PROXY_PORT"
+echo "Loop prevention is active to avoid 'too many open files' errors"
 echo
 echo -e "${YELLOW}Testing Instructions:${NC}"
 echo "1. Open your browser and navigate to https://speedtest.net"
 echo "2. The traffic will automatically be throttled through your proxy"
-echo "3. You should see bandwidth throttling in effect"
+echo "3. You should see bandwidth throttling in effect without connection loops"
 echo
 echo -e "${YELLOW}Monitoring:${NC}"
-echo "- Watch proxy logs: tail -f /var/log/syslog | grep fault-injection"
 echo "- Monitor connections: ss -tulpn | grep $PROXY_PORT"
+echo "- Check iptables hits: iptables -t nat -L -n -v | grep REDIRECT"
 echo "- Test with curl: curl -w 'Speed: %{speed_download} bytes/s\\n' -o /dev/null -s https://speedtest.net"
 echo
 echo -e "${RED}Press Ctrl+C to stop transparent proxying and cleanup iptables rules${NC}"

@@ -125,6 +125,26 @@ async fn main() -> Result<()> {
     }
 }
 
+async fn resolve_original_destination(dest_addr: &str) -> String {
+    // For transparent proxying, we need to avoid redirect loops
+    // If the destination is our configured target, resolve it to actual IPs
+    if dest_addr.contains("speedtest.net") {
+        // Use DNS to get actual IP addresses to bypass iptables redirects
+        match tokio::net::lookup_host(dest_addr).await {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.next() {
+                    debug!("Resolved {} to {} to avoid redirect loop", dest_addr, addr);
+                    return addr.to_string();
+                }
+            }
+            Err(e) => {
+                debug!("Failed to resolve {}: {}, using original", dest_addr, e);
+            }
+        }
+    }
+    dest_addr.to_string()
+}
+
 async fn handle_connection(
     mut inbound: TcpStream,
     client_addr: std::net::SocketAddr,
@@ -146,16 +166,20 @@ async fn handle_connection(
         info!("Browser should connect to destination hostname directly for proper certificate validation");
     }
 
+    // For transparent proxying, we need to resolve the original destination
+    // to avoid iptables redirect loops
+    let actual_dest = resolve_original_destination(&dest_addr).await;
+    
     // Connect to the destination server
-    let mut outbound = match TcpStream::connect(&dest_addr).await {
+    let mut outbound = match TcpStream::connect(&actual_dest).await {
         Ok(stream) => {
-            info!("Successfully connected to destination: {}", dest_addr);
+            info!("Successfully connected to destination: {} (resolved from {})", actual_dest, dest_addr);
             stream
         }
         Err(e) => {
-            error!("Failed to connect to destination {}: {}", dest_addr, e);
+            error!("Failed to connect to destination {}: {}", actual_dest, e);
             return Err(e)
-                .with_context(|| format!("Failed to connect to destination {}", dest_addr));
+                .with_context(|| format!("Failed to connect to destination {}", actual_dest));
         }
     };
 

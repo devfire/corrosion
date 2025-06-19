@@ -6,7 +6,11 @@ This guide explains how to set up transparent proxying to automatically intercep
 
 Your fault injection proxy currently runs as a TCP proxy on `localhost:8080` forwarding to `speedtest.net:443`. To test bandwidth throttling without certificate errors, you need to intercept traffic transparently.
 
-## Method 1: DNS Redirect (Recommended - Simplest)
+## ⚠️ IMPORTANT: "Too Many Open Files" Fix
+
+If you encountered the "Too many open files" error with the original iptables method, this was caused by a redirect loop. Use the **Fixed iptables method** or **DNS redirect method** below.
+
+## Method 1: DNS Redirect (Recommended - Simplest & Most Reliable)
 
 This method redirects `speedtest.net` to `localhost` in your system's DNS resolution.
 
@@ -31,22 +35,24 @@ sudo ./setup_dns_redirect.sh
 - Still shows certificate warning (but you can proceed safely)
 - Affects all applications system-wide
 
-## Method 2: iptables REDIRECT (Advanced)
+## Method 2: Fixed iptables REDIRECT (Advanced - Loop Prevention)
 
-This method uses iptables to intercept packets destined for speedtest.net IPs and redirect them to your proxy.
+This method uses iptables with loop prevention to intercept packets destined for speedtest.net IPs and redirect them to your proxy.
 
 ### Setup:
 ```bash
-sudo ./setup_transparent_proxy.sh
+sudo ./setup_transparent_proxy_fixed.sh
 ```
 
 ### How it works:
 1. Resolves speedtest.net to get current IP addresses
-2. Creates iptables NAT rules to redirect traffic to those IPs
+2. Creates iptables NAT rules with packet marking to prevent loops
 3. Redirects port 443 traffic to your proxy on port 8080
-4. Automatically cleans up iptables rules when stopped
+4. Uses mangle table to mark proxy-originated packets and skip redirecting them
+5. Automatically cleans up iptables rules when stopped
 
 ### Pros:
+- Prevents "too many open files" errors with loop detection
 - More sophisticated approach
 - Can be selective about which traffic to intercept
 - No DNS modification required
@@ -56,23 +62,33 @@ sudo ./setup_transparent_proxy.sh
 - More complex to debug
 - May interfere with other network tools
 
-## Method 3: Manual iptables (Expert Level)
+## Method 3: Original iptables (Deprecated - Has Loop Issue)
 
-For complete control, you can set up iptables rules manually:
+⚠️ **DO NOT USE** - The original `setup_transparent_proxy.sh` causes redirect loops and "too many open files" errors.
+Use Method 2 (Fixed iptables) instead.
+
+## Method 4: Manual iptables (Expert Level)
+
+For complete control, you can set up iptables rules manually with loop prevention:
 
 ### Get speedtest.net IPs:
 ```bash
 dig +short speedtest.net
 ```
 
-### Create redirect rules:
+### Create redirect rules with loop prevention:
 ```bash
-# Create custom chain
+# Create custom chains
 sudo iptables -t nat -N SPEEDTEST_PROXY
+sudo iptables -t mangle -N PROXY_MARK
 
-# Add redirect rules for each IP
-sudo iptables -t nat -A SPEEDTEST_PROXY -d 151.101.194.219 -p tcp --dport 443 -j REDIRECT --to-port 8080
-sudo iptables -t nat -A SPEEDTEST_PROXY -d 151.101.66.219 -p tcp --dport 443 -j REDIRECT --to-port 8080
+# Mark packets from proxy to avoid loops
+sudo iptables -t mangle -A OUTPUT -p tcp --sport 8080 -j MARK --set-mark 1
+sudo iptables -t mangle -A OUTPUT -p tcp --dport 443 -m owner --uid-owner $(id -u) -j MARK --set-mark 1
+
+# Add redirect rules for each IP (with loop prevention)
+sudo iptables -t nat -A SPEEDTEST_PROXY -d 151.101.194.219 -p tcp --dport 443 -m mark ! --mark 1 -j REDIRECT --to-port 8080
+sudo iptables -t nat -A SPEEDTEST_PROXY -d 151.101.66.219 -p tcp --dport 443 -m mark ! --mark 1 -j REDIRECT --to-port 8080
 # ... repeat for all IPs
 
 # Apply the chain
@@ -84,6 +100,10 @@ sudo iptables -t nat -I OUTPUT -j SPEEDTEST_PROXY
 sudo iptables -t nat -D OUTPUT -j SPEEDTEST_PROXY
 sudo iptables -t nat -F SPEEDTEST_PROXY
 sudo iptables -t nat -X SPEEDTEST_PROXY
+sudo iptables -t mangle -F PROXY_MARK
+sudo iptables -t mangle -X PROXY_MARK
+sudo iptables -t mangle -D OUTPUT -p tcp --sport 8080 -j MARK --set-mark 1
+sudo iptables -t mangle -D OUTPUT -p tcp --dport 443 -m owner --uid-owner $(id -u) -j MARK --set-mark 1
 ```
 
 ## Testing Your Setup
