@@ -1,5 +1,5 @@
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{debug, info};
@@ -28,7 +28,12 @@ pub struct BandwidthConfig {
 }
 
 impl LatencyConfig {
-    pub fn new(enabled: bool, fixed_ms: u64, random_range: Option<(u64, u64)>, probability: f64) -> Self {
+    pub fn new(
+        enabled: bool,
+        fixed_ms: u64,
+        random_range: Option<(u64, u64)>,
+        probability: f64,
+    ) -> Self {
         Self {
             enabled,
             fixed_ms,
@@ -43,7 +48,12 @@ impl LatencyConfig {
 }
 
 impl PacketLossConfig {
-    pub fn new(enabled: bool, probability: f64, burst_size: Option<u32>, burst_probability: f64) -> Self {
+    pub fn new(
+        enabled: bool,
+        probability: f64,
+        burst_size: Option<u32>,
+        burst_probability: f64,
+    ) -> Self {
         Self {
             enabled,
             probability: probability.clamp(0.0, 1.0),
@@ -84,7 +94,11 @@ pub struct FaultInjector {
 }
 
 impl FaultInjector {
-    pub fn new(latency_config: LatencyConfig, packet_loss_config: PacketLossConfig, bandwidth_config: BandwidthConfig) -> Self {
+    pub fn new(
+        latency_config: LatencyConfig,
+        packet_loss_config: PacketLossConfig,
+        bandwidth_config: BandwidthConfig,
+    ) -> Self {
         Self {
             latency_config,
             packet_loss_config,
@@ -131,7 +145,10 @@ impl FaultInjector {
         if let Some((min, max)) = self.latency_config.random_range {
             let random_delay = self.rng.gen_range(min..=max);
             total_delay += random_delay;
-            debug!("Random latency component: {}ms (range: {}-{}ms)", random_delay, min, max);
+            debug!(
+                "Random latency component: {}ms (range: {}-{}ms)",
+                random_delay, min, max
+            );
         }
 
         total_delay
@@ -152,7 +169,10 @@ impl FaultInjector {
                     self.burst_counter = 0;
                     debug!("Exiting burst packet loss mode for {}", connection_id);
                 }
-                info!("Dropping packet {} in burst mode for {}", self.burst_counter, connection_id);
+                info!(
+                    "Dropping packet {} in burst mode for {}",
+                    self.burst_counter, connection_id
+                );
                 return true;
             } else {
                 // Check if we should enter burst mode
@@ -169,7 +189,10 @@ impl FaultInjector {
         // Regular packet loss check
         let roll: f64 = self.rng.gen_range(0.0..1.0);
         if roll <= self.packet_loss_config.probability {
-            info!("Dropping packet for {} (probability: {:.3})", connection_id, roll);
+            info!(
+                "Dropping packet for {} (probability: {:.3})",
+                connection_id, roll
+            );
             return true;
         }
 
@@ -184,14 +207,15 @@ impl FaultInjector {
 
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        
+
         // Refill tokens based on elapsed time
         let tokens_to_add = elapsed * self.bandwidth_config.limit_bps as f64;
-        self.bandwidth_tokens = (self.bandwidth_tokens + tokens_to_add).min(self.bandwidth_config.burst_size as f64);
+        self.bandwidth_tokens =
+            (self.bandwidth_tokens + tokens_to_add).min(self.bandwidth_config.burst_size as f64);
         self.last_refill = now;
 
         let bytes_needed = bytes as f64;
-        
+
         if self.bandwidth_tokens >= bytes_needed {
             // We have enough tokens, consume them
             self.bandwidth_tokens -= bytes_needed;
@@ -204,19 +228,18 @@ impl FaultInjector {
             let tokens_deficit = bytes_needed - self.bandwidth_tokens;
             let delay_seconds = tokens_deficit / self.bandwidth_config.limit_bps as f64;
             let delay_ms = (delay_seconds * 1000.0) as u64;
-            
+
             debug!(
                 "Bandwidth throttling: delaying {}ms for {} bytes on {}",
                 delay_ms, bytes, connection_id
             );
-            
+
             sleep(Duration::from_millis(delay_ms)).await;
-            
+
             // After delay, we should have enough tokens
             self.bandwidth_tokens = 0.0; // Consume all available tokens
         }
     }
-
 }
 
 #[cfg(test)]
