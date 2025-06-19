@@ -51,6 +51,26 @@ pub struct Args {
     /// Probability of entering burst packet loss mode (0.0-1.0)
     #[arg(long, default_value = "0.0")]
     pub packet_loss_burst_probability: f64,
+
+    /// Enable bandwidth throttling
+    #[arg(long, default_value = "false")]
+    pub bandwidth_enabled: bool,
+
+    /// Maximum bandwidth in bytes per second (0 = unlimited)
+    #[arg(long, default_value = "0")]
+    pub bandwidth_limit_bps: u64,
+
+    /// Bandwidth limit in kilobytes per second (alternative to bps)
+    #[arg(long, value_parser = parse_bandwidth_kbps)]
+    pub bandwidth_limit_kbps: Option<u64>,
+
+    /// Bandwidth limit in megabytes per second (alternative to bps/kbps)
+    #[arg(long, value_parser = parse_bandwidth_mbps)]
+    pub bandwidth_limit_mbps: Option<u64>,
+
+    /// Bandwidth throttling burst size in bytes (allows temporary bursts)
+    #[arg(long, default_value = "8192")]
+    pub bandwidth_burst_size: u64,
 }
 
 fn parse_latency_range(s: &str) -> Result<(u64, u64), String> {
@@ -71,6 +91,18 @@ fn parse_latency_range(s: &str) -> Result<(u64, u64), String> {
     Ok((min, max))
 }
 
+fn parse_bandwidth_kbps(s: &str) -> Result<u64, String> {
+    let kbps = s.parse::<u64>()
+        .map_err(|_| "Invalid bandwidth value in kbps".to_string())?;
+    Ok(kbps * 1024) // Convert to bytes per second
+}
+
+fn parse_bandwidth_mbps(s: &str) -> Result<u64, String> {
+    let mbps = s.parse::<u64>()
+        .map_err(|_| "Invalid bandwidth value in mbps".to_string())?;
+    Ok(mbps * 1024 * 1024) // Convert to bytes per second
+}
+
 impl Args {
     pub fn parse_args() -> Self {
         Self::parse()
@@ -82,5 +114,17 @@ impl Args {
 
     pub fn dest_address(&self) -> String {
         format!("{}:{}", self.dest_ip, self.dest_port)
+    }
+
+    /// Calculate the final bandwidth limit in bytes per second
+    pub fn bandwidth_limit(&self) -> u64 {
+        // Priority: mbps > kbps > bps
+        if let Some(mbps_bytes) = self.bandwidth_limit_mbps {
+            mbps_bytes
+        } else if let Some(kbps_bytes) = self.bandwidth_limit_kbps {
+            kbps_bytes
+        } else {
+            self.bandwidth_limit_bps
+        }
     }
 }

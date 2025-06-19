@@ -1,6 +1,6 @@
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{debug, info};
 
@@ -18,6 +18,13 @@ pub struct PacketLossConfig {
     pub probability: f64,
     pub burst_size: Option<u32>,
     pub burst_probability: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BandwidthConfig {
+    pub enabled: bool,
+    pub limit_bps: u64,
+    pub burst_size: u64,
 }
 
 impl LatencyConfig {
@@ -50,22 +57,43 @@ impl PacketLossConfig {
     }
 }
 
+impl BandwidthConfig {
+    pub fn new(enabled: bool, limit_bps: u64, burst_size: u64) -> Self {
+        Self {
+            enabled,
+            limit_bps,
+            burst_size,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.enabled || self.limit_bps == 0
+    }
+}
+
 pub struct FaultInjector {
     latency_config: LatencyConfig,
     packet_loss_config: PacketLossConfig,
+    bandwidth_config: BandwidthConfig,
     rng: StdRng,
     burst_counter: u32,
     in_burst_mode: bool,
+    // Bandwidth throttling state
+    bandwidth_tokens: f64,
+    last_refill: Instant,
 }
 
 impl FaultInjector {
-    pub fn new(latency_config: LatencyConfig, packet_loss_config: PacketLossConfig) -> Self {
+    pub fn new(latency_config: LatencyConfig, packet_loss_config: PacketLossConfig, bandwidth_config: BandwidthConfig) -> Self {
         Self {
             latency_config,
             packet_loss_config,
+            bandwidth_config: bandwidth_config.clone(),
             rng: StdRng::from_entropy(),
             burst_counter: 0,
             in_burst_mode: false,
+            bandwidth_tokens: bandwidth_config.burst_size as f64,
+            last_refill: Instant::now(),
         }
     }
 
@@ -148,6 +176,47 @@ impl FaultInjector {
         false
     }
 
+    /// Apply bandwidth throttling by delaying if necessary
+    pub async fn apply_bandwidth_throttling(&mut self, bytes: usize, connection_id: &str) {
+        if self.bandwidth_config.is_disabled() {
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        
+        // Refill tokens based on elapsed time
+        let tokens_to_add = elapsed * self.bandwidth_config.limit_bps as f64;
+        self.bandwidth_tokens = (self.bandwidth_tokens + tokens_to_add).min(self.bandwidth_config.burst_size as f64);
+        self.last_refill = now;
+
+        let bytes_needed = bytes as f64;
+        
+        if self.bandwidth_tokens >= bytes_needed {
+            // We have enough tokens, consume them
+            self.bandwidth_tokens -= bytes_needed;
+            debug!(
+                "Bandwidth throttling: consumed {} tokens, {} remaining for {}",
+                bytes_needed, self.bandwidth_tokens, connection_id
+            );
+        } else {
+            // Not enough tokens, calculate delay needed
+            let tokens_deficit = bytes_needed - self.bandwidth_tokens;
+            let delay_seconds = tokens_deficit / self.bandwidth_config.limit_bps as f64;
+            let delay_ms = (delay_seconds * 1000.0) as u64;
+            
+            debug!(
+                "Bandwidth throttling: delaying {}ms for {} bytes on {}",
+                delay_ms, bytes, connection_id
+            );
+            
+            sleep(Duration::from_millis(delay_ms)).await;
+            
+            // After delay, we should have enough tokens
+            self.bandwidth_tokens = 0.0; // Consume all available tokens
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -179,11 +248,13 @@ mod tests {
     async fn test_fault_injector_creation() {
         let latency_config = LatencyConfig::new(true, 100, Some((50, 200)), 0.8);
         let packet_loss_config = PacketLossConfig::new(false, 0.0, None, 0.0);
-        let injector = FaultInjector::new(latency_config, packet_loss_config);
+        let bandwidth_config = BandwidthConfig::new(false, 0, 8192);
+        let injector = FaultInjector::new(latency_config, packet_loss_config, bandwidth_config);
         assert_eq!(injector.latency_config.fixed_ms, 100);
         assert_eq!(injector.latency_config.random_range, Some((50, 200)));
         assert_eq!(injector.latency_config.probability, 0.8);
         assert!(injector.packet_loss_config.is_disabled());
+        assert!(injector.bandwidth_config.is_disabled());
     }
 
     #[test]
@@ -208,5 +279,17 @@ mod tests {
 
         let config = PacketLossConfig::new(true, 0.5, Some(5), 1.5);
         assert_eq!(config.burst_probability, 1.0);
+    }
+
+    #[test]
+    fn test_bandwidth_config_disabled() {
+        let config = BandwidthConfig::new(false, 1000, 8192);
+        assert!(config.is_disabled());
+
+        let config = BandwidthConfig::new(true, 0, 8192);
+        assert!(config.is_disabled());
+
+        let config = BandwidthConfig::new(true, 1000, 8192);
+        assert!(!config.is_disabled());
     }
 }

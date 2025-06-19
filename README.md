@@ -9,6 +9,7 @@ A transparent TCP proxy implementation using Tokio for fault injection testing a
 - **Transparent bidirectional data forwarding**
 - **Latency fault injection** with configurable parameters
 - **Packet loss simulation** with burst mode support
+- **Bandwidth throttling** with token bucket algorithm
 - **Probability-based fault injection**
 - **Fixed and random latency injection**
 - **Proper error handling**
@@ -67,6 +68,13 @@ cargo run -- --help
 - `--packet-loss-probability`: Probability of dropping packets, 0.0-1.0 (default: `0.0`)
 - `--packet-loss-burst-size`: Number of consecutive packets to drop in burst mode
 - `--packet-loss-burst-probability`: Probability of entering burst mode, 0.0-1.0 (default: `0.0`)
+
+**Bandwidth Throttling:**
+- `--bandwidth-enabled`: Enable bandwidth throttling (default: `false`)
+- `--bandwidth-limit-bps`: Maximum bandwidth in bytes per second (default: `0` = unlimited)
+- `--bandwidth-limit-kbps`: Bandwidth limit in kilobytes per second (alternative to bps)
+- `--bandwidth-limit-mbps`: Bandwidth limit in megabytes per second (alternative to bps/kbps)
+- `--bandwidth-burst-size`: Burst size in bytes for token bucket algorithm (default: `8192`)
 
 Command-line arguments take precedence over environment variables.
 
@@ -168,6 +176,74 @@ python3 test_packet_loss.py
 ```
 
 Expected output should show approximately 20% of requests failing due to packet loss.
+
+### Bandwidth Throttling
+
+The proxy supports bandwidth throttling to limit connection throughput and simulate slow network conditions.
+
+#### Basic Bandwidth Throttling
+
+Limit bandwidth to 100 KB/s:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 100
+```
+
+Limit bandwidth to 1 MB/s:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-mbps 1
+```
+
+Limit bandwidth to 50,000 bytes per second:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-bps 50000
+```
+
+#### Advanced Bandwidth Configuration
+
+Configure bandwidth with custom burst size (allows temporary bursts above the limit):
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 50 --bandwidth-burst-size 16384
+```
+
+#### Combined Fault Injection
+
+Combine bandwidth throttling with latency and packet loss:
+```bash
+cargo run -- --dest-ip httpbin.org --dest-port 443 \
+  --bandwidth-enabled --bandwidth-limit-kbps 100 \
+  --latency-enabled --latency-fixed-ms 100 \
+  --packet-loss-enabled --packet-loss-probability 0.05
+```
+
+#### Testing Bandwidth Throttling
+
+Use the included demo script to test bandwidth throttling:
+```bash
+./demo_bandwidth_throttling.sh
+```
+
+Or test manually:
+```bash
+# Start the proxy with bandwidth throttling
+cargo run -- --dest-ip httpbin.org --dest-port 443 --bandwidth-enabled --bandwidth-limit-kbps 10
+
+# In another terminal, test download speed
+curl -o /dev/null -w "%{speed_download}\n" http://127.0.0.1:8080/bytes/1048576
+```
+
+Expected output should show download speeds limited to approximately the configured bandwidth limit.
+
+#### How Bandwidth Throttling Works
+
+The bandwidth throttling implementation uses a **token bucket algorithm**:
+
+1. **Token Bucket**: A bucket holds tokens representing available bandwidth
+2. **Token Refill**: Tokens are added to the bucket at the configured rate (bytes per second)
+3. **Token Consumption**: Each data packet consumes tokens equal to its size
+4. **Throttling**: If insufficient tokens are available, the connection waits until enough tokens are refilled
+5. **Burst Handling**: The bucket size allows temporary bursts above the sustained rate
+
+This provides smooth bandwidth limiting while allowing natural traffic bursts within the configured limits.
 
 #### Test with telnet:
 ```bash
@@ -345,6 +421,216 @@ This design is particularly useful for testing how applications handle:
 
 The per-packet approach provides much more realistic network latency simulation compared to connection-level delays only.
 
+## How Bandwidth Throttling Works in Detail
+
+This section provides a comprehensive explanation of the bandwidth throttling implementation and mechanics.
+
+### Configuration Structure
+
+The bandwidth throttling is configured through the [`BandwidthConfig`](src/fault_injection.rs:24) struct:
+
+```rust
+pub struct BandwidthConfig {
+    pub enabled: bool,      // Whether bandwidth throttling is active
+    pub limit_bps: u64,     // Maximum bandwidth in bytes per second
+    pub burst_size: u64,    // Burst size in bytes for token bucket
+}
+```
+
+### Token Bucket Algorithm Implementation
+
+The bandwidth throttling uses a **token bucket algorithm** implemented in the [`FaultInjector`](src/fault_injection.rs:74) struct with these key state variables:
+
+```rust
+pub struct FaultInjector {
+    // ... other fields ...
+    bandwidth_tokens: f64,    // Current available tokens (bytes)
+    last_refill: Instant,     // Last time tokens were refilled
+}
+```
+
+### Token Bucket Mechanics
+
+The [`apply_bandwidth_throttling()`](src/fault_injection.rs:180) method implements the core token bucket logic:
+
+#### 1. Token Refill Process
+
+```rust
+let now = Instant::now();
+let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+
+// Refill tokens based on elapsed time
+let tokens_to_add = elapsed * self.bandwidth_config.limit_bps as f64;
+self.bandwidth_tokens = (self.bandwidth_tokens + tokens_to_add)
+    .min(self.bandwidth_config.burst_size as f64);
+```
+
+**Key Points:**
+- Tokens are refilled continuously based on elapsed time
+- Refill rate = configured bandwidth limit (bytes per second)
+- Token bucket capacity = configured burst size
+- Tokens cannot exceed the burst size limit
+
+#### 2. Token Consumption Process
+
+For each data packet, the system checks token availability:
+
+```rust
+let bytes_needed = bytes as f64;
+
+if self.bandwidth_tokens >= bytes_needed {
+    // Sufficient tokens available - consume immediately
+    self.bandwidth_tokens -= bytes_needed;
+    // Packet forwarded without delay
+} else {
+    // Insufficient tokens - calculate required delay
+    let tokens_deficit = bytes_needed - self.bandwidth_tokens;
+    let delay_seconds = tokens_deficit / self.bandwidth_config.limit_bps as f64;
+    let delay_ms = (delay_seconds * 1000.0) as u64;
+    
+    // Apply delay and consume all available tokens
+    sleep(Duration::from_millis(delay_ms)).await;
+    self.bandwidth_tokens = 0.0;
+}
+```
+
+### When Bandwidth Throttling is Applied
+
+Looking at [`copy_bidirectional_with_faults()`](src/main.rs:172), bandwidth throttling is applied **per packet** in both directions:
+
+```rust
+// For client->server packets
+let n = a.read(&mut buf_a).await?;
+fault_injector.apply_bandwidth_throttling(n, connection_id).await; // Throttle before forwarding
+match b.write_all(&buf_a[..n]).await { ... }
+
+// For server->client packets
+let n = b.read(&mut buf_b).await?;
+fault_injector.apply_bandwidth_throttling(n, connection_id).await; // Throttle before forwarding
+match a.write_all(&buf_b[..n]).await { ... }
+```
+
+**Important**: Bandwidth throttling is applied **per packet** during data transfer, affecting each data chunk independently.
+
+### Burst Behavior Explained
+
+The token bucket algorithm allows for **burst traffic** within limits:
+
+#### Normal Operation
+- Steady-state traffic flows at the configured rate limit
+- Small packets consume tokens and are forwarded immediately
+- Token bucket refills continuously at the configured rate
+
+#### Burst Scenarios
+- **Burst Allowance**: If no traffic occurs for a period, tokens accumulate up to `burst_size`
+- **Burst Consumption**: Large packets or rapid packet sequences can consume accumulated tokens
+- **Burst Exhaustion**: Once burst tokens are consumed, traffic returns to steady-state rate limiting
+
+#### Example Burst Calculation
+With configuration: `--bandwidth-limit-kbps 100 --bandwidth-burst-size 16384`
+
+- **Steady rate**: 100 KB/s (102,400 bytes/second)
+- **Burst capacity**: 16,384 bytes
+- **Burst duration**: ~0.16 seconds of full-rate traffic above the limit
+- **Recovery time**: ~0.16 seconds to refill burst capacity
+
+### Delay Calculation Details
+
+When insufficient tokens are available, the delay is calculated as:
+
+```rust
+delay_seconds = tokens_deficit / bandwidth_limit_bps
+```
+
+**Example**:
+- Packet size: 8,192 bytes
+- Available tokens: 2,048 bytes
+- Bandwidth limit: 10,240 bytes/second (10 KB/s)
+- Tokens deficit: 8,192 - 2,048 = 6,144 bytes
+- Required delay: 6,144 ÷ 10,240 = 0.6 seconds (600ms)
+
+### Real-World Performance Characteristics
+
+#### Traffic Shaping Effects
+- **Smooth traffic flow**: Prevents sudden bandwidth spikes
+- **Burst accommodation**: Allows temporary bursts within configured limits
+- **Fair queuing**: Each connection gets proportional bandwidth access
+- **Latency impact**: Large packets may experience delays when tokens are insufficient
+
+#### Typical Behavior Patterns
+1. **Small packets** (< burst_size): Usually forwarded immediately
+2. **Large packets** (> available tokens): Experience calculated delays
+3. **Sustained traffic**: Settles into steady-state rate limiting
+4. **Bursty traffic**: Benefits from token accumulation during idle periods
+
+### Configuration Examples and Effects
+
+#### Conservative Throttling
+```bash
+--bandwidth-limit-kbps 50 --bandwidth-burst-size 4096
+```
+- **Effect**: Tight bandwidth control with small burst allowance
+- **Use case**: Simulating slow network connections
+- **Behavior**: Frequent delays for packets > 4KB
+
+#### Generous Burst Allowance
+```bash
+--bandwidth-limit-mbps 1 --bandwidth-burst-size 65536
+```
+- **Effect**: 1 MB/s average with 64KB burst capacity
+- **Use case**: Simulating networks with good burst tolerance
+- **Behavior**: Accommodates larger packets and traffic bursts
+
+#### Strict Rate Limiting
+```bash
+--bandwidth-limit-bps 10240 --bandwidth-burst-size 1024
+```
+- **Effect**: Very tight control with minimal burst allowance
+- **Use case**: Testing application behavior under severe bandwidth constraints
+- **Behavior**: Most packets experience some delay
+
+### Integration with Other Fault Types
+
+Bandwidth throttling works in combination with other fault injection types:
+
+```rust
+// Order of fault injection per packet:
+1. Packet loss check (may drop packet entirely)
+2. Latency injection (adds delay before throttling)
+3. Bandwidth throttling (adds delay based on available tokens)
+4. Packet forwarding (actual data transmission)
+```
+
+This layered approach provides realistic network simulation where packets can experience:
+- **Packet loss**: Complete packet drops
+- **Latency**: Fixed/random delays simulating network routing
+- **Bandwidth limits**: Rate-based delays simulating capacity constraints
+
+### Implementation Details
+
+- **Async/Await**: Uses [`tokio::time::sleep()`](src/fault_injection.rs:213) for non-blocking delays
+- **Per-Connection**: Each connection gets its own token bucket state
+- **High Precision**: Uses `f64` for token calculations to handle fractional tokens accurately
+- **Time-Based**: Token refill based on actual elapsed time for accurate rate limiting
+- **Logging**: Comprehensive debug logging shows token consumption and delays
+
+### Key Characteristics
+
+- **Per-Packet Throttling**: Bandwidth limiting is applied **to each individual packet** during data transfer
+- **Bidirectional**: Both client→server and server→client packets are throttled independently
+- **Token Bucket Algorithm**: Provides smooth rate limiting with configurable burst allowance
+- **Precise Rate Control**: Maintains accurate long-term bandwidth limits
+- **Burst Tolerance**: Allows temporary traffic bursts within configured limits
+- **Real-Time Adaptation**: Continuously adjusts based on actual traffic patterns
+
+This implementation provides realistic bandwidth simulation that closely mimics real network behavior, including:
+- **Network capacity limits**: Simulating connection bandwidth constraints
+- **Traffic shaping**: Smooth bandwidth utilization over time
+- **Burst handling**: Natural accommodation of bursty traffic patterns
+- **Quality of Service**: Predictable bandwidth allocation per connection
+
+The per-packet token bucket approach provides much more realistic bandwidth throttling compared to simple connection-level rate limiting.
+
 ## Architecture
 
 The implementation follows Rust best practices:
@@ -370,10 +656,10 @@ The implementation follows Rust best practices:
 
 The fault injection framework is designed to be extensible. Planned features include:
 
-- **Bandwidth throttling**: Limit connection throughput
 - **Connection drops**: Randomly terminate connections
 - **Jitter injection**: Add variable delays to simulate network instability
 - **Protocol-specific faults**: HTTP error injection, DNS failures, etc.
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
 - **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model
+- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttling
