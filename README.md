@@ -186,7 +186,7 @@ NOTE: While you do not need to setup a dedicated `proxy-injector` user ahead of 
 
 If you don't, you will get TLS certificate errors.
 
-For more details, please see [`setup_iptables_dedicated_user.sh`](src/setup_iptables_dedicated_user.sh).
+For more details, please see [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh).
 
 Limit bandwidth to 1MBps:
 ```bash
