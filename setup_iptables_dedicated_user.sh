@@ -153,7 +153,8 @@ setup_rules() {
     echo
     echo "  Your proxy should be run as the '$PROXY_USER' user to avoid loops."
     echo "  Example command:"
-    tput setaf 2; echo "    sudo -u $PROXY_USER /path/to/your/proxy-binary"; tput sgr0
+    tput setaf 2; 
+    echo "    sudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip rlgncook.speedtest.sbcglobal.net --dest-port 8080 --bandwidth-enabled --bandwidth-limit 1mbps"; tput sgr0
     echo
     echo "  Press CTRL+C in this terminal to stop and cleanly remove all rules."
     echo "---------------------------------------------------------------------"
