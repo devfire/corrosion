@@ -660,4 +660,4 @@ The fault injection framework is designed to be extensible. Planned features inc
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
 - **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model
-- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttling
+- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttlingsudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip speedtest.net --dest-port 443 --bandwidth-enabled --bandwidth-limit 1kbps

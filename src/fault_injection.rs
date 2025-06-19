@@ -200,8 +200,15 @@ impl FaultInjector {
     }
 
     /// Apply bandwidth throttling by delaying if necessary
+    /// Apply bandwidth throttling by delaying if necessary
     pub async fn apply_bandwidth_throttling(&mut self, bytes: usize, connection_id: &str) {
         if self.bandwidth_config.is_disabled() {
+            return;
+        }
+
+        // Convert limit from bits-per-second to bytes-per-second
+        let rate_bytes_per_sec = self.bandwidth_config.limit_bps as f64 / 8.0;
+        if rate_bytes_per_sec <= 0.0 {
             return;
         }
 
@@ -209,36 +216,38 @@ impl FaultInjector {
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
 
         // Refill tokens based on elapsed time
-        let tokens_to_add = elapsed * self.bandwidth_config.limit_bps as f64;
+        let tokens_to_add = elapsed * rate_bytes_per_sec;
         self.bandwidth_tokens =
             (self.bandwidth_tokens + tokens_to_add).min(self.bandwidth_config.burst_size as f64);
         self.last_refill = now;
 
         let bytes_needed = bytes as f64;
+        let tokens_after_consumption = self.bandwidth_tokens - bytes_needed;
 
-        if self.bandwidth_tokens >= bytes_needed {
-            // We have enough tokens, consume them
-            self.bandwidth_tokens -= bytes_needed;
-            debug!(
-                "Bandwidth throttling: consumed {} tokens, {} remaining for {}",
-                bytes_needed, self.bandwidth_tokens, connection_id
-            );
-        } else {
-            // Not enough tokens, calculate delay needed
-            let tokens_deficit = bytes_needed - self.bandwidth_tokens;
-            let delay_seconds = tokens_deficit / self.bandwidth_config.limit_bps as f64;
+        if tokens_after_consumption < 0.0 {
+            // Not enough tokens, calculate delay needed based on the deficit
+            let tokens_deficit = -tokens_after_consumption;
+            let delay_seconds = tokens_deficit / rate_bytes_per_sec;
             let delay_ms = (delay_seconds * 1000.0) as u64;
 
-            debug!(
-                "Bandwidth throttling: delaying {}ms for {} bytes on {}",
-                delay_ms, bytes, connection_id
-            );
+            if delay_ms > 0 {
+                info!(
+                    "Bandwidth throttling: delaying {}ms for {} bytes on {}",
+                    delay_ms, bytes, connection_id
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
 
-            sleep(Duration::from_millis(delay_ms)).await;
-
-            // After delay, we should have enough tokens
-            self.bandwidth_tokens = 0.0; // Consume all available tokens
+                // After sleeping, update the last_refill time to account for the delay
+                self.last_refill = Instant::now();
+            }
         }
+
+        // Always consume the tokens, allowing the balance to go negative (into "debt")
+        self.bandwidth_tokens -= bytes_needed;
+        info!(
+            "Bandwidth throttling: consumed {} tokens, {} remaining for {}",
+            bytes_needed, self.bandwidth_tokens, connection_id
+        );
     }
 }
 
