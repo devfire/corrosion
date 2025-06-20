@@ -21,7 +21,7 @@ Corrosion can be used in either of two ways, via a transparent `iptables`-based 
 NOTE: The `localhost` option is heaps easier but will give TLS certificate errors if you are testing HTTPS traffic.
 
 In general, the steps are:
-1. Run the proxy.
+1. Run `corrosion`.
 2. Setup the `iptables` using the provided [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh) shell script.
 3. Run your speed test client.
 
