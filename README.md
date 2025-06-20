@@ -1,6 +1,6 @@
 # TCP Fault Injection Proxy
 
-A transparent TCP proxy implementation using Tokio for fault injection testing and network analysis.
+A transparent TCP proxy implementation using Tokio for fault injection testing.
 
 ## Features
 
@@ -14,7 +14,7 @@ A transparent TCP proxy implementation using Tokio for fault injection testing a
 - **Fixed and random latency injection**
 - **Proper error handling**
 - **Clean connection lifecycle management**
-- **Configurable bind and destination addresses** via command-line arguments or environment variables
+- **Configurable bind and destination addresses** via command-line arguments
 
 ## Usage
 
@@ -184,6 +184,7 @@ The proxy supports bandwidth throttling to limit connection throughput and simul
 NOTE: While you do not need to setup a dedicated `proxy-injector` user ahead of time,
 `corrosion` must run as `proxy-injector` in order for `iptables` transparent proxy to work.
 
+WARNING: This whole section is pretty complex and requires additional `iptables` setup. Don't "YOLO" this part; please read the instructions carefully. 
 If you don't, you will get TLS certificate errors.
 
 For more details, please see [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh).
@@ -192,6 +193,8 @@ Limit bandwidth to 1MBps:
 ```bash
 sudo -u proxy-injector ./target/release/fault-injection --port 8080 --dest-ip rlgncook.speedtest.sbcglobal.net --dest-port 8080 --bandwidth-enabled --bandwidth-limit 1mbps
 ```
+NOTE: I used `rlgncook.speedtest.sbcglobal.net` since it was one of the closest ones to me but you can use whatever speedtest.net endpoint you wish. 
+You discover endpoints with `speedtest -s 67937 -vv` and note the DNS name of the server you are talking to.
 
 #### Advanced Bandwidth Configuration
 
