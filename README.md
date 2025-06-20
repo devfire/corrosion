@@ -5,7 +5,6 @@ A transparent TCP proxy implementation using Tokio for fault injection testing.
 ## Features
 
 - **Asynchronous TCP proxy** using Tokio
-- **Concurrent connection handling**
 - **Transparent bidirectional data forwarding**
 - **Latency fault injection** with configurable parameters
 - **Packet loss simulation** with burst mode support
@@ -17,6 +16,13 @@ A transparent TCP proxy implementation using Tokio for fault injection testing.
 - **Configurable bind and destination addresses** via command-line arguments
 
 ## Usage
+Corrosion can be used in either of two ways, via a transparent `iptables`-based re-routing or directly against `corrosion`'s `localhost` interface.
+NOTE: The `localhost` option is heaps easier but will give TLS certificate errors if you are testing HTTPS traffic.
+
+In general, the steps are:
+1. Run the proxy.
+2. Setup the `iptables` using the provided [`setup_iptables_dedicated_user.sh`](setup_iptables_dedicated_user.sh) shell script.
+3. Run your speed test client.
 
 ### Running the Proxy
 
