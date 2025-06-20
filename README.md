@@ -1,3 +1,4 @@
+![logo](support/logo.png)
 # TCP Fault Injection Proxy
 
 A transparent TCP proxy implementation using Tokio for fault injection testing.
