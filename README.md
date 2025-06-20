@@ -227,7 +227,7 @@ Closest servers:
 
     ID  Name                           Location             Country
 ==============================================================================
- **67937**  AT&T                           Raleigh, NC          United States
+ 67937  AT&T                           Raleigh, NC          United States
  29113  Duke University                Durham, NC           United States
  58326  Spectrum                       Durham, NC           United States
  14774  UNC Chapel Hill                Chapel Hill, NC      United States
