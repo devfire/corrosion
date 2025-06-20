@@ -200,7 +200,6 @@ impl FaultInjector {
     }
 
     /// Apply bandwidth throttling by delaying if necessary
-    /// Apply bandwidth throttling by delaying if necessary
     pub async fn apply_bandwidth_throttling(&mut self, bytes: usize, connection_id: &str) {
         if self.bandwidth_config.is_disabled() {
             return;

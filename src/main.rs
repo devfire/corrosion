@@ -89,9 +89,7 @@ async fn main() -> Result<()> {
         "TCP proxy listening on {} -> forwarding to {}",
         bind_addr, dest_addr
     );
-    info!("WARNING: When connecting via HTTPS, use the destination hostname in your browser");
-    info!("  Correct: https://speedtest.net (will be throttled if proxy configured)");
-    info!("  Incorrect: https://localhost:{} (will cause TLS certificate errors)", args.port);
+    info!("WARNING: When connecting via HTTPS, use the destination hostname in your browser, not localhost!");
 
     loop {
         // Accept new connections
@@ -125,25 +123,25 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn resolve_original_destination(dest_addr: &str) -> String {
-    // For transparent proxying, we need to avoid redirect loops
-    // If the destination is our configured target, resolve it to actual IPs
-    if dest_addr.contains("speedtest.net") {
-        // Use DNS to get actual IP addresses to bypass iptables redirects
-        match tokio::net::lookup_host(dest_addr).await {
-            Ok(mut addrs) => {
-                if let Some(addr) = addrs.next() {
-                    debug!("Resolved {} to {} to avoid redirect loop", dest_addr, addr);
-                    return addr.to_string();
-                }
-            }
-            Err(e) => {
-                debug!("Failed to resolve {}: {}, using original", dest_addr, e);
-            }
-        }
-    }
-    dest_addr.to_string()
-}
+// async fn resolve_original_destination(dest_addr: &str) -> String {
+//     // For transparent proxying, we need to avoid redirect loops
+//     // If the destination is our configured target, resolve it to actual IPs
+//     if dest_addr.contains("speedtest.net") {
+//         // Use DNS to get actual IP addresses to bypass iptables redirects
+//         match tokio::net::lookup_host(dest_addr).await {
+//             Ok(mut addrs) => {
+//                 if let Some(addr) = addrs.next() {
+//                     debug!("Resolved {} to {} to avoid redirect loop", dest_addr, addr);
+//                     return addr.to_string();
+//                 }
+//             }
+//             Err(e) => {
+//                 debug!("Failed to resolve {}: {}, using original", dest_addr, e);
+//             }
+//         }
+//     }
+//     dest_addr.to_string()
+// }
 
 async fn handle_connection(
     mut inbound: TcpStream,
@@ -168,18 +166,18 @@ async fn handle_connection(
 
     // For transparent proxying, we need to resolve the original destination
     // to avoid iptables redirect loops
-    let actual_dest = resolve_original_destination(&dest_addr).await;
+    // let actual_dest = resolve_original_destination(&dest_addr).await;
     
     // Connect to the destination server
-    let mut outbound = match TcpStream::connect(&actual_dest).await {
+    let mut outbound = match TcpStream::connect(&dest_addr).await {
         Ok(stream) => {
-            info!("Successfully connected to destination: {} (resolved from {})", actual_dest, dest_addr);
+            info!("Successfully connected to destination: {} ", dest_addr);
             stream
         }
         Err(e) => {
-            error!("Failed to connect to destination {}: {}", actual_dest, e);
+            error!("Failed to connect to destination {}: {}", dest_addr, e);
             return Err(e)
-                .with_context(|| format!("Failed to connect to destination {}", actual_dest));
+                .with_context(|| format!("Failed to connect to destination {}", dest_addr));
         }
     };
 
