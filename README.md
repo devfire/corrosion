@@ -3,6 +3,8 @@
 
 A transparent TCP proxy implementation using Tokio for fault injection testing.
 
+NOTE: for a linux utility that does a similar thing, please see [`tc`](https://ittavern.com/simulate-an-unreliable-network-connection-with-tc-and-netem-on-linux/).
+
 ## Features
 
 - **Asynchronous TCP proxy** using Tokio
@@ -931,4 +933,4 @@ The fault injection framework is designed to be extensible. Planned features inc
 - **Configuration files**: YAML/JSON configuration support
 - **Metrics and monitoring**: Export fault injection statistics
 - **Advanced packet loss patterns**: Periodic loss, Gilbert-Elliott model
-- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttlingsudo -u proxy-injector ./target/
+- **Advanced bandwidth patterns**: Variable bandwidth, time-based throttling
