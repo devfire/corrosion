@@ -19,7 +19,8 @@ NOTE: for a linux utility that does a similar thing, please see [`tc`](https://i
 - **Configurable bind and destination addresses** via command-line arguments
 
 ## Usage
-Corrosion can be used in either of two ways, via a transparent `iptables`-based re-routing or directly against `corrosion`'s `localhost` interface.
+Corrosion can be used in either of two ways, via a transparent `iptables`-based re-routing or directly against the `localhost` endpoint.
+
 NOTE: The `localhost` option is heaps easier but will give TLS certificate errors if you are testing HTTPS traffic.
 
 In general, the steps are:
